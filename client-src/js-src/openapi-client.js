@@ -1,5 +1,3 @@
-/* eslint-disable no-unused-vars */
-
 /**
  * Copyright 2016 Google Inc. All rights reserved.
  *
@@ -18,26 +16,26 @@
 
 import {DefaultApi as Api, Configuration} from 'chromestatus-openapi';
 
-(function(exports) {
-'use strict';
 /**
  * Creates a client.
  * @extends {import('chromestatus-openapi').DefaultApiInterface}
  */
-class ChromeStatusOpenApiClient extends Api {
+export class ChromeStatusOpenApiClient extends Api {
   constructor() {
-    super(new Configuration({
-      credentials: 'same-origin',
-      middleware: [
-        {pre: ChromeStatusMiddlewares.xsrfMiddleware},
-        {post: ChromeStatusMiddlewares.xssiMiddleware},
-      ],
-    }));
+    super(
+      new Configuration({
+        credentials: 'same-origin',
+        apiKey: 'placeholder-api-key',
+        middleware: [
+          {pre: ChromeStatusMiddlewares.xsrfMiddleware},
+          {post: ChromeStatusMiddlewares.xssiMiddleware},
+        ],
+      })
+    );
   }
 }
 
-class ChromeStatusMiddlewares {
-  // eslint-disable-next-line valid-jsdoc
+export class ChromeStatusMiddlewares {
   /**
    * Refresh the XSRF Token, if needed. Add to headers.
    *
@@ -45,16 +43,15 @@ class ChromeStatusMiddlewares {
    * @return {Promise<import('chromestatus-openapi').FetchParams>}
    */
   static async xsrfMiddleware(req) {
-    return window.csClient.ensureTokenIsValid().then(() => {
-      const headers = req.init.headers || {};
-      headers['X-Xsrf-Token'] = [window.csClient.token];
+    const headers = req.init.headers || {};
+    if ('X-Xsrf-Token' in headers) {
+      await window.csClient.ensureTokenIsValid();
+      headers['X-Xsrf-Token'] = window.csClient.token;
       req.init.headers = headers;
-      return req;
-    });
+    }
+    return req;
   }
 
-
-  // eslint-disable-next-line valid-jsdoc
   /**
    * Server sends XSSI prefix. Remove it and allow the client to parse.
    *
@@ -63,23 +60,18 @@ class ChromeStatusMiddlewares {
    */
   static async xssiMiddleware(context) {
     const response = context.response;
-    return response.text().then((rawResponseText) => {
-      const XSSIPrefix = ')]}\'\n';
+    return response.text().then(rawResponseText => {
+      const XSSIPrefix = ")]}'\n";
       if (!rawResponseText.startsWith(XSSIPrefix)) {
         throw new Error(
-          `Response does not start with XSSI prefix: ${XSSIPrefix}`);
+          `Response does not start with XSSI prefix: ${XSSIPrefix}`
+        );
       }
-      return new Response(
-        rawResponseText.substring(XSSIPrefix.length),
-        {
-          status: response.status,
-          statusText: response.statusText,
-          headers: response.headers,
-        });
+      return new Response(rawResponseText.substring(XSSIPrefix.length), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     });
   }
 }
-
-exports.ChromeStatusOpenApiClient = ChromeStatusOpenApiClient;
-exports.ChromeStatusMiddlewares = ChromeStatusMiddlewares;
-})(window);

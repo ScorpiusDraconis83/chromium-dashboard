@@ -13,50 +13,50 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Type
-import threading
 
-from api import accounts_api
-from api import blink_components_api
-from api import component_users
-from api import components_users
-from api import channels_api
-from api import comments_api
-from api import cues_api
-from api import features_api
-from api import feature_links_api
-from api import login_api
-from api import logout_api
-from api import metricsdata
-from api import origin_trials_api
-from api import permissions_api
-from api import processes_api
-from api import reviews_api
-from api import settings_api
-from api import stages_api
-from api import stars_api
-from api import token_refresh_api
-from framework import basehandlers
-from framework import csp
-from framework import sendemail
-from internals import detect_intent
-from internals import fetchmetrics
-from internals import feature_links
-from internals import maintenance_scripts
-from internals import notifier
-from internals import data_backup
-from internals import inactive_users
-from internals import search_fulltext
-from internals import reminders
-from pages import featurelist
-from pages import guide
-from pages import intentpreview
-from pages import metrics
-from pages import ot_requests
-from pages import users
 import settings
-
+from api import (
+  accounts_api,
+  blink_components_api,
+  channels_api,
+  comments_api,
+  component_users,
+  components_users,
+  cues_api,
+  external_reviews_api,
+  feature_latency_api,
+  feature_links_api,
+  features_api,
+  login_api,
+  logout_api,
+  metricsdata,
+  origin_trials_api,
+  permissions_api,
+  processes_api,
+  review_latency_api,
+  reviews_api,
+  settings_api,
+  spec_mentors_api,
+  stages_api,
+  stars_api,
+  token_refresh_api,
+)
+from framework import basehandlers, csp, sendemail
+from internals import (
+  data_backup,
+  detect_intent,
+  feature_links,
+  fetchmetrics,
+  inactive_users,
+  maintenance_scripts,
+  notifier,
+  reminders,
+  search_fulltext,
+)
+from pages import featurelist, guide, intentpreview, metrics, ot_requests, users
 
 # Patch treading library to work-around bug with Google Cloud Logging.
 original_delete = threading.Thread._delete  # type: ignore
@@ -117,6 +117,8 @@ api_routes: list[Route] = [
         reviews_api.GatesAPI),
     Route(f'{API_BASE}/features/<int:feature_id>/gates/<int:gate_id>',
         reviews_api.GatesAPI),
+    Route(f'{API_BASE}/gates/pending',
+        reviews_api.PendingGatesAPI),
     Route(f'{API_BASE}/features/<int:feature_id>/approvals/comments',
         comments_api.CommentsAPI),
     Route(f'{API_BASE}/features/<int:feature_id>/approvals/<int:gate_id>/comments',
@@ -140,6 +142,11 @@ api_routes: list[Route] = [
     Route(f'{API_BASE}/components/<int:component_id>/users/<int:user_id>',
         component_users.ComponentUsersAPI),
 
+    Route(f'{API_BASE}/external_reviews/<string:review_group>', external_reviews_api.ExternalReviewsAPI),
+    Route(f'{API_BASE}/spec_mentors', spec_mentors_api.SpecMentorsAPI),
+    Route(f'{API_BASE}/feature-latency', feature_latency_api.FeatureLatencyAPI),
+    Route(f'{API_BASE}/review-latency', review_latency_api.ReviewLatencyAPI),
+
     Route(f'{API_BASE}/login', login_api.LoginAPI),
     Route(f'{API_BASE}/logout', logout_api.LogoutAPI),
     Route(f'{API_BASE}/currentuser/permissions', permissions_api.PermissionsAPI),
@@ -158,6 +165,10 @@ api_routes: list[Route] = [
     # (f'{API_BASE}/metrics/<str:kind>', TODO),  # uma-export data
     # (f'{API_BASE}/metrics/<str:kind>/<int:bucket_id>', TODO),
     Route(f'{API_BASE}/origintrials', origin_trials_api.OriginTrialsAPI),
+    Route(f'{API_BASE}/origintrials/<int:feature_id>/<int:stage_id>/create',
+          origin_trials_api.OriginTrialsAPI),
+    Route(f'{API_BASE}/origintrials/<int:feature_id>/<int:extension_stage_id>/extend',
+          origin_trials_api.OriginTrialsAPI),
 ]
 
 # The Routes below that have no handler specified use SPAHandler.
@@ -165,7 +176,11 @@ api_routes: list[Route] = [
 spa_page_routes = [
   Route('/'),
   Route('/roadmap'),
+  # TODO(jrobbins): remove '/myfeatures' after a while.
   Route('/myfeatures', defaults={'require_signin': True}),
+  Route('/myfeatures/review', defaults={'require_signin': True}),
+  Route('/myfeatures/starred', defaults={'require_signin': True}),
+  Route('/myfeatures/editable', defaults={'require_signin': True}),
   Route('/newfeatures'),
   Route('/feature/<int:feature_id>'),
   Route('/feature/<int:feature_id>/activity'),
@@ -204,6 +219,11 @@ spa_page_routes = [
   Route('/metrics/feature/popularity'),
   Route('/metrics/feature/timeline/popularity'),
   Route('/metrics/feature/timeline/popularity/<int:bucket_id>'),
+  Route('/reports/external_reviews'),
+  Route('/reports/external_reviews/<reviewer>'),
+  Route('/reports/spec_mentors'),
+  Route('/reports/feature-latency'),
+  Route('/reports/review-latency'),
   Route('/settings', defaults={'require_signin': True}),
   Route('/enterprise'),
   Route(
@@ -221,7 +241,9 @@ mpa_page_routes: list[Route] = [
 
     Route('/admin/features/launch/<int:feature_id>',
         intentpreview.IntentEmailPreviewHandler),
-    Route('/admin/features/launch/<int:feature_id>/<int:stage_id>',
+    Route('/admin/features/launch/<int:feature_id>/<int:intent_stage>',
+        intentpreview.IntentEmailPreviewHandler),
+    Route('/admin/features/launch/<int:feature_id>/<int:intent_stage>/<int:gate_id>',
         intentpreview.IntentEmailPreviewHandler),
 
     # Note: The only requests being made now hit /features.json and
@@ -254,6 +276,12 @@ internals_routes: list[Route] = [
   Route('/cron/reindex_all', search_fulltext.ReindexAllFeatures),
   Route('/cron/update_all_feature_links', feature_links.UpdateAllFeatureLinksHandlers),
   Route('/cron/associate_origin_trials', maintenance_scripts.AssociateOTs),
+  Route('/cron/send-ot-process-reminders',
+        reminders.SendOTReminderEmailsHandler),
+  # TODO(DanielRyanSmith): Add this route when OT creation is fully implemented.
+  # Route('/cron/create_origin_trials', maintenance_scripts.CreateOriginTrials),
+  # Route('/cron/activate_origin_trials',
+  #       maintenance_scripts.ActivateOriginTrials),
 
   Route('/admin/find_stop_words', search_fulltext.FindStopWords),
 
@@ -263,10 +291,29 @@ internals_routes: list[Route] = [
   Route('/tasks/email-assigned', notifier.ReviewAssignmentHandler),
   Route('/tasks/email-comments', notifier.FeatureCommentHandler),
   Route('/tasks/update-feature-links', feature_links.FeatureLinksUpdateHandler),
-  Route('/tasks/email-ot-creation-request',
-        notifier.OriginTrialCreationRequestHandler),
-  Route('/tasks/email-ot-extension-request',
-        notifier.OriginTrialExtensionRequestHandler),
+  Route('/tasks/email-ot-activated', notifier.OTActivatedHandler),
+  Route('/tasks/email-ot-creation-processed',
+        notifier.OTCreationProcessedHandler),
+  Route('/tasks/email-ot-creation-request-failed',
+        notifier.OTCreationRequestFailedHandler),
+  Route('/tasks/email-ot-activation-failed',
+        notifier.OTActivationFailedHandler),
+  Route('/tasks/email-ot-creation-request', notifier.OTCreationRequestHandler),
+  Route('/tasks/email-ot-extended', notifier.OTExtendedHandler),
+  Route('/tasks/email-ot-extension-approved',
+        notifier.OTExtensionApprovedHandler),
+
+  # OT process reminder emails
+  Route('/tasks/email-ot-first-branch', notifier.OTFirstBranchReminderHandler),
+  Route('/tasks/email-ot-last-branch', notifier.OTLastBranchReminderHandler),
+  Route('/tasks/email-ot-ending-next-release',
+        notifier.OTEndingNextReleaseReminderHandler),
+  Route('/tasks/email-ot-ending-this-release',
+        notifier.OTEndingThisReleaseReminderHandler),
+  Route('/tasks/email-ot-beta-availability',
+        notifier.OTBetaAvailabilityReminderHandler),
+  Route('/tasks/email-ot-automated-process',
+        notifier.OTAutomatedProcessEmailHandler),
 
   # Maintenance scripts.
   Route('/scripts/evaluate_gate_status',
@@ -281,6 +328,10 @@ internals_routes: list[Route] = [
         maintenance_scripts.BackfillStageCreated),
   Route('/scripts/backfill_feature_links',
         maintenance_scripts.BackfillFeatureLinks),
+  Route('/scripts/backfill_enterprise_impact',
+        maintenance_scripts.BackfillFeatureEnterpriseImpact),
+  Route('/scripts/delete_empty_extension_stages',
+        maintenance_scripts.DeleteEmptyExtensionStages)
 ]
 
 dev_routes: list[Route] = []

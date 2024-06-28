@@ -27,6 +27,7 @@ from internals import approval_defs
 from internals.core_models import FeatureEntry, MilestoneSet
 from internals.review_models import Gate
 from internals import notifier
+from internals import ot_process_reminders
 from internals import stage_helpers
 from internals import slo
 from internals.core_enums import (
@@ -37,6 +38,7 @@ import settings
 CHROME_RELEASE_SCHEDULE_URL = (
     'https://chromiumdash.appspot.com/fetch_milestone_schedule')
 WEBSTATUS_EMAIL = 'webstatus@google.com'
+CBE_ESCLATION_EMAIL = 'cbe-releasenotes@google.com'
 STAGING_EMAIL = 'jrobbins-test@googlegroups.com'
 
 
@@ -58,8 +60,10 @@ def choose_email_recipients(
     return feature.owner_emails
 
   # Escalated notification. Add extended recipients.
-  ws_group_email = WEBSTATUS_EMAIL if settings.PROD else STAGING_EMAIL
-  all_notified_users = set([ws_group_email])
+  ws_group_emails = [STAGING_EMAIL]
+  if settings.PROD:
+    ws_group_emails = [WEBSTATUS_EMAIL, CBE_ESCLATION_EMAIL]
+  all_notified_users = set(ws_group_emails)
   all_notified_users.add(feature.creator_email)
   all_notified_users.update(feature.owner_emails)
   all_notified_users.update(feature.editor_emails)
@@ -171,10 +175,13 @@ class AbstractReminderHandler(basehandlers.FlaskHandler):
         relevant_stages = stages.get(
             STAGE_TYPES_BY_FIELD_MAPPING[field][feature.feature_type] or -1, [])
         for stage in relevant_stages:
-          milestones = stage.milestones
-          m = (None if milestones is None
-              else getattr(milestones,
-                  MilestoneSet.MILESTONE_FIELD_MAPPING[field]))
+          if field == 'rollout_milestone':
+            m = getattr(stage, field)
+          else:
+            milestones = stage.milestones
+            m = (None if milestones is None
+                else getattr(milestones,
+                    MilestoneSet.MILESTONE_FIELD_MAPPING[field]))
           if m is not None and m >= min_mstone and m <= max_mstone:
             if min_milestone is None:
               min_milestone = m
@@ -228,7 +235,8 @@ class FeatureAccuracyHandler(AbstractReminderHandler):
       'shipped_android_milestone',
       'shipped_ios_milestone',
       'shipped_milestone',
-      'shipped_webview_milestone']
+      'shipped_webview_milestone',
+      'rollout_milestone']
 
   def prefilter_features(
       self,
@@ -405,3 +413,10 @@ class SLOOverdueHandler(basehandlers.FlaskHandler):
     review_team = approval_defs.get_approvers(gate.gate_type)
     assignees = gate.assignee_emails or []
     return list(set(assignees + review_team))
+
+
+class SendOTReminderEmailsHandler(basehandlers.FlaskHandler):
+  def get_template_data(self, **kwargs):
+    """Send any time-based origin trials reminder emails."""
+    self.require_cron_header()
+    return ot_process_reminders.send_email_reminders()

@@ -22,11 +22,13 @@ from typing import Optional
 import requests
 
 from framework import permissions
+from framework import rediscache
 from internals import core_enums
 from internals import slo
 from internals.review_models import Gate, GateDef, OwnersFile, Vote
 import settings
 
+APPROVERS_CACHE_KEY = 'approvers'
 CACHE_EXPIRATION = 60 * 60  # One hour
 IN_NDB = 'stored in ndb'
 
@@ -92,6 +94,12 @@ ShipApproval = ApprovalFieldDef(
     core_enums.GATE_API_SHIP, THREE_LGTM,
     approvers=API_OWNERS_URL, team_name='API Owners')
 
+PlanApproval = ApprovalFieldDef(
+    'Intent to Deprecate and Remove',
+    'Three API Owners must approve your intent',
+    core_enums.GATE_API_PLAN, THREE_LGTM,
+    approvers=API_OWNERS_URL, team_name='API Owners')
+
 PrivacyOriginTrialApproval = ApprovalFieldDef(
     'Privacy OT Review',
     'Privacy OT Review',
@@ -108,6 +116,8 @@ PrivacyShipApproval = ApprovalFieldDef(
     escalation_email='chrome-privacy-owp-rotation@google.com',
     slo_initial_response=6)
 
+# Note: There is no PrivacyPlanApproval
+
 SecurityOriginTrialApproval = ApprovalFieldDef(
     'Security OT Review',
     'Security OT Review',
@@ -122,10 +132,18 @@ SecurityShipApproval = ApprovalFieldDef(
     approvers=SECURITY_APPROVERS, team_name='Security',
     slo_initial_response=6)
 
+# Note: There is no SecurityPlanApproval
+
 EnterpriseShipApproval = ApprovalFieldDef(
     'Enterprise Ship Review',
     'Enterprise Ship Review',
     core_enums.GATE_ENTERPRISE_SHIP, ONE_LGTM,
+    approvers=ENTERPRISE_APPROVERS, team_name='Enterprise')
+
+EnterprisePlanApproval = ApprovalFieldDef(
+    'Enterprise Deprecation Plan Review',
+    'Enterprise Deprecation Plan Review',
+    core_enums.GATE_ENTERPRISE_PLAN, ONE_LGTM,
     approvers=ENTERPRISE_APPROVERS, team_name='Enterprise')
 
 DebuggabilityOriginTrialApproval = ApprovalFieldDef(
@@ -142,22 +160,36 @@ DebuggabilityShipApproval = ApprovalFieldDef(
     approvers=DEBUGGABILITY_APPROVERS, team_name='Debuggability',
     escalation_email='devtools-dev@chromium.org')
 
+DebuggabilityPlanApproval = ApprovalFieldDef(
+    'Debuggability Deprecation Plan Review',
+    'Debuggability Deprecation Plan Review',
+    core_enums.GATE_DEBUGGABILITY_PLAN, ONE_LGTM,
+    approvers=DEBUGGABILITY_APPROVERS, team_name='Debuggability',
+    escalation_email='devtools-dev@chromium.org')
+
 TestingShipApproval = ApprovalFieldDef(
     'Testing Ship Review',
     'Testing Ship Review',
     core_enums.GATE_TESTING_SHIP, ONE_LGTM,
     approvers=TESTING_APPROVERS, team_name='Testing')
 
+TestingPlanApproval = ApprovalFieldDef(
+    'Testing Deprecation Plan Review',
+    'Testing Deprecation Plan Review',
+    core_enums.GATE_TESTING_PLAN, ONE_LGTM,
+    approvers=TESTING_APPROVERS, team_name='Testing')
+
 APPROVAL_FIELDS_BY_ID = {
     afd.field_id: afd
     for afd in [
         PrototypeApproval, ExperimentApproval, ExtendExperimentApproval,
-        ShipApproval,
+        ShipApproval, PlanApproval,
         PrivacyOriginTrialApproval, PrivacyShipApproval,
         SecurityOriginTrialApproval, SecurityShipApproval,
-        EnterpriseShipApproval,
+        EnterpriseShipApproval, EnterprisePlanApproval,
         DebuggabilityOriginTrialApproval, DebuggabilityShipApproval,
-        TestingShipApproval,
+        DebuggabilityPlanApproval,
+        TestingShipApproval, TestingPlanApproval,
         ]
     }
 
@@ -237,20 +269,26 @@ def get_approvers(field_id) -> list[str]:
   if field_id not in APPROVAL_FIELDS_BY_ID:
     return []
 
+  cache_key = '%s|%s' % (APPROVERS_CACHE_KEY, field_id)
+  cached_approvers = rediscache.get(cache_key)
+  if cached_approvers:
+    return cached_approvers
+
   afd = APPROVAL_FIELDS_BY_ID[field_id]
 
   if afd.approvers == IN_NDB:
     gate_def = GateDef.get_gate_def(field_id)
-    return gate_def.approvers
-
-  # afd.approvers can be either a hard-coded list of approver emails
-  # or it can be a URL of an OWNERS file.  Right now we only use the
-  # URL approach, but both are supported.
-  if isinstance(afd.approvers, str):
+    owners = gate_def.approvers
+  elif isinstance(afd.approvers, str):
+    # afd.approvers can be either a hard-coded list of approver emails
+    # or it can be a URL of an OWNERS file.  Right now we only use the
+    # URL approach, but both are supported.
     owners = fetch_owners(afd.approvers)
-    return owners
+  else:
+    owners = afd.approvers
 
-  return afd.approvers
+  rediscache.set(cache_key, owners, time=CACHE_EXPIRATION)
+  return owners
 
 
 def fields_approvable_by(user):
@@ -303,8 +341,10 @@ def is_resolved(approval_values, field_id):
 
 
 def set_vote(feature_id: int,  gate_type: int | None, new_state: int,
-    set_by_email: str, gate_id: int | None=None) -> None:
-  """Add or update an approval value."""
+    set_by_email: str, gate_id: int | None=None) -> int | None:
+  """Add or update an approval value and return new approval state if
+  changed.
+  """
   gate: Optional[Gate] = None
   if gate_id is None and gate_type is not None:
     gate = get_gate_by_type(feature_id, gate_type)
@@ -312,7 +352,7 @@ def set_vote(feature_id: int,  gate_type: int | None, new_state: int,
     if not gate:
       logging.warning('Gate entity not found for the given feature. '
           'Cannot set vote.')
-      return
+      return None
     gate_id = gate.key.integer_id()
     gate_type = gate.gate_type
   else:
@@ -340,7 +380,8 @@ def set_vote(feature_id: int,  gate_type: int | None, new_state: int,
     slo_was_updated = slo.record_vote(gate, votes)
     if state_was_updated or slo_was_updated:
       gate.put()
-
+      return gate.state
+  return None
 
 def get_gate_by_type(feature_id: int, gate_type: int):
   """Return a single gate based on the feature and gate type."""
@@ -376,6 +417,11 @@ def _calc_gate_state(votes: list[Vote], rule: str) -> int:
         Vote.NEEDS_WORK, Vote.REVIEW_STARTED, Vote.REVIEW_REQUESTED,
         Vote.DENIED, Vote.INTERNAL_REVIEW, Vote.NA_REQUESTED):
       return vote.state
+
+  # An API Owner can kick off review of an I2S thread that was not detected
+  # by voting Approve for their "LGTM1".
+  if rule == THREE_LGTM and num_lgtms >= 1:
+    return Vote.REVIEW_REQUESTED
 
   # The feature owner has not requested review yet, or the request was
   # withdrawn.

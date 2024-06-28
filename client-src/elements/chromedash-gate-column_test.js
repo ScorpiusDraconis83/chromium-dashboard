@@ -1,7 +1,7 @@
 import {html} from 'lit';
 import {assert, fixture} from '@open-wc/testing';
 import {ChromedashGateColumn} from './chromedash-gate-column';
-import '../js-src/cs-client';
+import {ChromeStatusClient} from '../js-src/cs-client';
 import sinon from 'sinon';
 
 describe('chromedash-settings-page', () => {
@@ -23,7 +23,8 @@ describe('chromedash-settings-page', () => {
 
   it('can be added to the page before being opened', async () => {
     const component = await fixture(
-      html`<chromedash-gate-column></chromedash-gate-column>`);
+      html`<chromedash-gate-column></chromedash-gate-column>`
+    );
     assert.exists(component);
     assert.instanceOf(component, ChromedashGateColumn);
   });

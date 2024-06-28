@@ -15,6 +15,10 @@ def get_flask_template_path() -> str:
 # For the live cr-status server, this setting is None.
 SEND_ALL_EMAIL_TO: str|None = (
     'cr-status-staging-emails+%(user)s+%(domain)s@google.com')
+# Any emails with Cc addresses will instead be sent this group
+# for non-prod environments.
+CC_ALL_EMAIL_TO: str|None = (
+    'cr-status-staging-cc-emails+%(user)s+%(domain)s@google.com')
 
 BOUNCE_ESCALATION_ADDR = 'cr-status-bounces@google.com'
 
@@ -76,6 +80,7 @@ REVIEW_COMMENT_MAILING_LIST = 'jrobbins-test@googlegroups.com'
 MAX_LOG_LINE = 200 * 1000
 
 # Origin trials API URL
+OT_URL = 'https://origintrials-staging.corp.google.com/origintrials/'
 OT_API_URL = 'https://staging-chromeorigintrials-pa.sandbox.googleapis.com'
 OT_API_KEY: str|None = None  # Value is set later when request is needed.
 
@@ -92,7 +97,9 @@ elif APP_ID == 'cr-status':
   APP_TITLE = 'Chrome Platform Status'
   SEND_EMAIL = True
   SEND_ALL_EMAIL_TO = None  # Deliver it to the intended users
+  CC_ALL_EMAIL_TO = None
   SITE_URL = 'https://chromestatus.com/'
+  OT_URL = 'https://developer.chrome.com/origintrials/'
   OT_API_URL = 'https://chromeorigintrials-pa.googleapis.com'
   GOOGLE_SIGN_IN_CLIENT_ID = (
       '999517574127-7ueh2a17bv1ave9thlgtap19pt5qjp4g.'

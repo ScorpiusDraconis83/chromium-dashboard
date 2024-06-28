@@ -12,38 +12,115 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import datetime
-from typing import Union, Callable, Optional
+import logging
+from dataclasses import dataclass
+from typing import Callable, Generic, Optional, TypeAlias, TypeVar, Union
 
 from google.cloud import ndb  # type: ignore
 from google.cloud.ndb.model import Model, Property  # for type checking only
-from google.cloud.ndb.tasklets import Future  # for type checking only
 from google.cloud.ndb.query import FilterNode  # for type checking only
+from google.cloud.ndb.tasklets import Future  # for type checking only
 
 from framework import users
-from framework import utils
 from internals import core_enums
 from internals.core_models import FeatureEntry, Stage
 from internals.review_models import Gate
 
+T = TypeVar('T')
+QueryValue: TypeAlias = bool | int | str | datetime.datetime
+
+
+@dataclass
+class Interval(Generic[T]):
+  """Represents a closed (inclusive) interval from low to high."""
+
+  low: T
+  high: T
+
+
+def validate_values(
+  field: ndb.Property, val_list: list[QueryValue | Interval[QueryValue]]
+):
+  """Checks that all of the values in val_list can be compared to the field's values."""
+  for val in val_list:
+    try:
+      # If the field can be set to val, then it can be compared to val.
+      if isinstance(val, Interval):
+        field._validate(val.low)
+        field._validate(val.high)
+      else:
+        field._validate(val)
+    except ndb.exceptions.BadValueError:
+      logging.info('Wrong type of value for %r: %r' % (field, val))
+      raise ValueError('Query value does not match field type')
+
+
+def build_filter(
+  field: ndb.Property, operator: str, val_list: list[QueryValue | Interval[QueryValue]]
+) -> ndb.Node:
+  """Returns an NDB filter node representing the operator applied to the field and val_list."""
+  validate_values(field, val_list)
+
+  if len(val_list) > 1:
+    if operator == '=':
+      return field.IN(val_list)
+    else:
+      raise ValueError('Quick-OR is not supported for operator: %r' % operator)
+  elif isinstance(val_list[0], Interval):
+    if operator == '=':
+      interval = val_list[0]
+      return ndb.AND(field >= interval.low, field <= interval.high)
+    else:
+      raise ValueError('Interval queries are not supported for operator: %r' % operator)
+  else:
+    val = val_list[0]
+    if operator == '=':
+      return field == val
+    elif operator == '<=':
+      return field <= val
+    elif operator == '<':
+      return field < val
+    elif operator == '>=':
+      return field >= val
+    elif operator == '>':
+      return field > val
+    elif operator == '!=':
+      return field != val
+    else:
+      raise ValueError('Unexpected query operator: %r' % operator)
+
 
 def single_field_query_async(
-    field_name: str, operator: str, val: Union[str, int, datetime.datetime],
-    limit: int|None = None) -> Union[list[int], Future]:
+  field_name: str,
+  operator: str,
+  val_list: list[QueryValue | Interval[QueryValue]],
+  limit: int | None = None,
+) -> list[int] | Future:
   """Create a query for one FeatureEntry field and run it, returning a promise."""
+  if not val_list or val_list == ['']:
+    logging.warning('No values were provided when searching %r', field_name)
+    return []
+
   # Note: We don't exclude deleted features, that's done by process_query.
   field_name = field_name.lower()
-  if field_name in QUERIABLE_FIELDS:
+  if field_name in COMPLEX_FIELDS:
+    return COMPLEX_FIELDS[field_name](operator, val_list, limit)
+  elif field_name in QUERIABLE_FIELDS:
     # It is a query on a field in FeatureEntry.
     query = FeatureEntry.query()
     field = QUERIABLE_FIELDS[field_name]
     if core_enums.is_enum_field(field_name):
-      enum_val = core_enums.convert_enum_string_to_int(field_name, val)
-      if enum_val < 0:
-        logging.warning('Cannot find enum %r:%r', field_name, val)
-        return []
-      val = enum_val
+      # Intervals of enums aren't supported for now because the integer values
+      # aren't in a logical order.
+      enum_val_list = []
+      for val in val_list:
+        enum_val = core_enums.convert_enum_string_to_int(field_name, val)
+        if enum_val < 0:
+          logging.warning('Cannot find enum %r:%r', field_name, val)
+          return []
+        enum_val_list.append(enum_val)
+      val_list = enum_val_list
   elif field_name in STAGE_QUERIABLE_FIELDS:
     # It is a query on a field in Stage.
     query = Stage.query()
@@ -62,33 +139,8 @@ def single_field_query_async(
     return []
 
   # TODO(jrobbins): Handle ":" operator as substrings for text fields.
-  # TODO(jrobbins): Implement quick-OR for integer fields, e.g., x=2,3,4.
 
-  try:
-    # If the field can be set to val, then it can be compared to val.
-    field._validate(val)
-  except ndb.exceptions.BadValueError:
-    logging.info('Wrong type of value for %r: %r' % (field, val))
-    raise ValueError('Query value does not match field type')
-
-  if (operator == '='):
-    val_list = str(val).split(',')
-    if len(val_list) > 1:
-      query = query.filter(field.IN(val_list))
-    else:
-      query = query.filter(field == val)
-  elif (operator == '<='):
-    query = query.filter(field <= val)
-  elif (operator == '<'):
-    query = query.filter(field < val)
-  elif (operator == '>='):
-    query = query.filter(field >= val)
-  elif (operator == '>'):
-    query = query.filter(field > val)
-  elif (operator == '!='):
-    query = query.filter(field != val)
-  else:
-    raise ValueError('Unexpected query operator: %r' % operator)
+  query = query.filter(build_filter(field, operator, val_list))
 
   if field_name in QUERIABLE_FIELDS:
     # It was a query directly on FeatureEntry, use keys to get feature IDs.
@@ -118,15 +170,15 @@ def negate_operator(operator: str) -> str:
   return operator
 
 
-def handle_me_query_async(field_name: str) -> Future:
+def handle_me_query_async(field_name: str) -> list[int] | Future:
   """Return a future for feature IDs that reference the current user."""
   user = users.get_current_user()
   if not user:
     return []
-  return single_field_query_async(field_name, '=', user.email())
+  return single_field_query_async(field_name, '=', [user.email()])
 
 
-def handle_can_edit_me_query_async() -> Future:
+def handle_can_edit_me_query_async() -> list[int] | Future:
   """Return a future for features that the current user can edit."""
   user = users.get_current_user()
   if not user:
@@ -140,7 +192,7 @@ def handle_can_edit_me_query_async() -> Future:
   return keys_promise
 
 
-def total_order_query_async(sort_spec: str) -> Union[list[int], Future]:
+def total_order_query_async(sort_spec: str) -> list[int] | Future:
   """Create a query promise for all FeatureEntry IDs sorted by sort_spec."""
   # TODO(jrobbins): Support multi-column sort.
   descending = False
@@ -167,7 +219,7 @@ def total_order_query_async(sort_spec: str) -> Union[list[int], Future]:
 
 def _sorted_by_joined_model(
     joinable_model_class: Model, condition: FilterNode, descending: bool,
-    order_by: Property) -> list[int]:
+    order_by: Property) -> Future:
   """Return feature_ids sorted by a field in a joined entity kind."""
   query = joinable_model_class.query()
   if condition:
@@ -177,12 +229,11 @@ def _sorted_by_joined_model(
   else:
     query = query.order(order_by)
 
-  joined_models = query.fetch(projection=['feature_id'])
-  feature_ids = utils.dedupe(jm.feature_id for jm in joined_models)
-  return feature_ids
+  projection_future = query.fetch_async(projection=['feature_id'])
+  return projection_future
 
 
-def sorted_by_pending_request_date(descending: bool) -> list[int]:
+def sorted_by_pending_request_date(descending: bool) -> Future:
   """Return feature_ids of pending approvals sorted by request date."""
   return _sorted_by_joined_model(
       Gate,
@@ -190,7 +241,7 @@ def sorted_by_pending_request_date(descending: bool) -> list[int]:
       descending, Gate.requested_on)
 
 
-def sorted_by_review_date(descending: bool) -> list[int]:
+def sorted_by_review_date(descending: bool) -> Future:
   """Return feature_ids of reviewed approvals sorted by last review."""
   return _sorted_by_joined_model(
       Gate,
@@ -201,7 +252,7 @@ def sorted_by_review_date(descending: bool) -> list[int]:
 QUERIABLE_FIELDS: dict[str, Property] = {
     'created.when': FeatureEntry.created,
     'updated.when': FeatureEntry.updated,
-    # accurate_as_of
+    'accurate_as_of': FeatureEntry.accurate_as_of,
     'creator': FeatureEntry.creator_email,
     'updater': FeatureEntry.updater_email,
     'owner': FeatureEntry.owner_emails,
@@ -222,6 +273,7 @@ QUERIABLE_FIELDS: dict[str, Property] = {
     'browsers.chrome.bug': FeatureEntry.bug_url,
     'launch_bug_url': FeatureEntry.launch_bug_url,
     'breaking_change': FeatureEntry.breaking_change,
+    'enterprise_impact': FeatureEntry.enterprise_impact,
 
     'browsers.chrome.status': FeatureEntry.impl_status_chrome,
     'browsers.chrome.flag_name': FeatureEntry.flag_name,
@@ -356,3 +408,45 @@ SORTABLE_FIELDS.update({
     'gate.requested_on': sorted_by_pending_request_date,
     'gate.reviewed_on': sorted_by_review_date,
     })
+
+
+def query_any_start_milestone(
+  operator: str,
+  val_list: list[QueryValue | Interval[QueryValue]],
+  limit: int | None = None,
+) -> Future:
+  """Finds features shipping at any stage to any platform in milestones matching the val_list."""
+  disjunction = []
+  for field_name in [
+    'browsers.chrome.android',
+    'browsers.chrome.desktop',
+    'browsers.chrome.devtrial.android.start',
+    'browsers.chrome.devtrial.desktop.start',
+    'browsers.chrome.devtrial.ios.start',
+    'browsers.chrome.devtrial.webview.start',
+    'browsers.chrome.ios',
+    'browsers.chrome.ot.android.start',
+    'browsers.chrome.ot.desktop.start',
+    'browsers.chrome.ot.ios.start',
+    'browsers.chrome.ot.webview.start',
+    'browsers.chrome.webview',
+  ]:
+    stage_types = [
+      st for st in STAGE_TYPES_BY_QUERY_FIELD[field_name].values() if st is not None
+    ]
+    disjunction.append(
+      ndb.AND(
+        Stage.stage_type.IN(stage_types),
+        build_filter(STAGE_QUERIABLE_FIELDS[field_name], operator, val_list),
+      )
+    )
+  return Stage.query(ndb.OR(*disjunction)).fetch_async(
+    projection=['feature_id'], limit=limit
+  )
+
+
+COMPLEX_FIELDS: dict[
+  str, Callable[[str, list[QueryValue | Interval[QueryValue]], int | None], Future]
+] = {
+  'any_start_milestone': query_any_start_milestone,
+}

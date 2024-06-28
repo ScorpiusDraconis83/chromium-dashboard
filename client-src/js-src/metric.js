@@ -1,5 +1,3 @@
-/* eslint-disable no-unused-vars */
-
 /**
  * Copyright 2016 Google Inc. All rights reserved.
  *
@@ -16,10 +14,7 @@
  * limitations under the License.
  */
 
-'use strict';
-
-(function(exports) {
-class Metric {
+export class Metric {
   static get supportsPerfNow() {
     return performance && performance.now;
   }
@@ -156,6 +151,3 @@ class Metric {
     return this;
   }
 }
-
-exports.Metric = Metric;
-})(window);

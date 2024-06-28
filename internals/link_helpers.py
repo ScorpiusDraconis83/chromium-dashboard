@@ -68,6 +68,14 @@ LINK_TYPES_REGEX = {
     LINK_TYPE_WEB: re.compile(r'https?://.*'),
 }
 
+TAG_REVIEW_URL_PATTERN = re.compile(r'github.com/w3ctag/design-reviews/', re.IGNORECASE)
+GECKO_REVIEW_URL_PATTERN = re.compile(
+  r'github.com/mozilla/standards-positions/', re.IGNORECASE
+)
+WEBKIT_REVIEW_URL_PATTERN = re.compile(
+  r'github.com/WebKit/standards-positions/', re.IGNORECASE
+)
+
 URL_REGEX = re.compile(r'(https?://\S+)')
 
 TIMEOUT = 30  # We wait at most 30 seconds for each web page request.
@@ -222,6 +230,7 @@ class Link():
         'created_at': resp.get('created_at'),
         'updated_at': resp.get('updated_at'),
         'closed_at': resp.get('closed_at'),
+        'labels': [label.get('name') for label in resp.get('labels', [])],
     }
 
     return information
@@ -314,9 +323,12 @@ class Link():
         # if the link is not valid, return early
         self.is_parsed = True
         return
-      if self.type == LINK_TYPE_CHROMIUM_BUG:
-        self.information = self._parse_chromium_bug()
-      elif self.type == LINK_TYPE_GITHUB_ISSUE:
+
+      # TODO(jrobbins): Re-enable after issues.chromium.org has an API
+      # if self.type == LINK_TYPE_CHROMIUM_BUG:
+      #  self.information = self._parse_chromium_bug()
+
+      if self.type == LINK_TYPE_GITHUB_ISSUE:
         self.information = self._parse_github_issue()
       elif self.type == LINK_TYPE_GITHUB_PULL_REQUEST:
         # we can also use github issue api to get pull request information

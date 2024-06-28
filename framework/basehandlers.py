@@ -28,6 +28,7 @@ import google.appengine.api
 from google.cloud import ndb  # type: ignore
 
 import settings
+from api import api_specs
 from framework import csp
 from framework import permissions
 from framework import secrets
@@ -35,18 +36,19 @@ from framework import users
 from framework import utils
 from framework import xsrf
 from internals import approval_defs
+from internals import notifier_helpers
+from internals.core_enums import ALL_ORIGIN_TRIAL_STAGE_TYPES
 from internals.core_models import FeatureEntry, MilestoneSet, Stage
+from internals.data_types import CHANGED_FIELDS_LIST_TYPE
 from internals import user_models
 
-from google.auth.transport import requests
 from flask import session
 from flask import render_template
 from flask_cors import CORS
-import sys
 
 # Our API responses are prefixed with this ro prevent attacks that
 # exploit <script src="...">.  See go/xssi.
-XSSI_PREFIX = ')]}\'\n';
+XSSI_PREFIX = ')]}\'\n'
 
 
 # See https://www.regextester.com/93901 for url regex
@@ -73,6 +75,7 @@ class BaseHandler(flask.views.MethodView):
         logging.info('Abort %r: %s' % (status, msg))
       flask.abort(status, description=msg, **kwargs)
     else:
+      logging.info('Abort %r' % status)
       flask.abort(status, **kwargs)
 
   def redirect(self, url):
@@ -330,6 +333,56 @@ class EntitiesAPIHandler(APIHandler):
     ) -> None:
     new_value = self.format_field_val(field, field_type, value)
     setattr(entity, field, new_value)
+
+  def update_stage(
+      self,
+      stage: Stage,
+      change_info: dict[str, Any],
+      changed_fields: CHANGED_FIELDS_LIST_TYPE,
+    ) -> bool:
+    """Update stage fields with changes provided."""
+    stage_was_updated = False
+    ot_action_requested = False
+    # Check if valid ID is provided and fetch stage if it exists.
+
+    # Update stage fields.
+    for field, field_type in api_specs.STAGE_FIELD_DATA_TYPES:
+      if field not in change_info:
+        continue
+      form_field_name = change_info[field]['form_field_name']
+      if form_field_name == 'ot_action_requested':
+        ot_action_requested = True
+      old_value = getattr(stage, field)
+
+      new_value = change_info[field].get('value')
+      self.update_field_value(stage, field, field_type, new_value)
+      changed_fields.append((form_field_name, old_value, new_value))
+      stage_was_updated = True
+
+    # Update milestone fields.
+    milestones = stage.milestones
+    for field, field_type in api_specs.MILESTONESET_FIELD_DATA_TYPES:
+      if field not in change_info:
+        continue
+      if milestones is None:
+        milestones = MilestoneSet()
+      form_field_name = change_info[field]['form_field_name']
+      old_value = getattr(milestones, field)
+      new_value = change_info[field].get('value')
+      self.update_field_value(milestones, field, field_type, new_value)
+      changed_fields.append((form_field_name, old_value, new_value))
+      stage_was_updated = True
+    stage.milestones = milestones
+
+    if stage_was_updated:
+      stage.put()
+
+    # Notify of OT creation request if one was sent.
+    if (ot_action_requested and
+        stage.stage_type in ALL_ORIGIN_TRIAL_STAGE_TYPES):
+      notifier_helpers.send_ot_notification(stage)
+
+    return stage_was_updated
 
   def format_field_val(
       self,

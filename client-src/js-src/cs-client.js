@@ -14,8 +14,32 @@
  * limitations under the License.
  */
 
-(function(exports) {
-'use strict';
+/**
+ * @typedef {object} FeatureLink
+ * @property {string} url
+ * @property {string} type
+ * @property {object} information - fields depend on type; see link_helpers.py
+ * @property {number} http_error_code
+ */
+
+/**
+ * @typedef {object} SampleFeatureLink
+ * @property {string} url
+ * @property {number} http_error_code
+ * @property {number[]} feature_ids
+ */
+
+/**
+ * @typedef {object} FeatureLinksSummary
+ * @property {number} total_count
+ * @property {number} covered_count
+ * @property {number} uncovered_count
+ * @property {number} error_count
+ * @property {number} http_error_count
+ * @property {Array<{key: string; count: number}>} link_types
+ * @property {Array<{key: string; count: number}>} uncovered_link_domains
+ * @property {Array<{key: string; count: number}>} error_link_domains
+ */
 
 /**
  * Generic Chrome Status Http Error.
@@ -34,7 +58,7 @@ class ChromeStatusHttpError extends Error {
  * FeatureNotFoundError represents an error for when a feature was not found
  * for the given ID.
  */
-class FeatureNotFoundError extends Error {
+export class FeatureNotFoundError extends Error {
   constructor(featureID) {
     super('Feature not found');
     this.name = 'FeatureNotFoundError';
@@ -42,7 +66,7 @@ class FeatureNotFoundError extends Error {
   }
 }
 
-class ChromeStatusClient {
+export class ChromeStatusClient {
   constructor(token, tokenExpiresSec) {
     this.token = token;
     this.tokenExpiresSec = tokenExpiresSec;
@@ -53,7 +77,10 @@ class ChromeStatusClient {
   async ensureTokenIsValid() {
     if (ChromeStatusClient.isTokenExpired(this.tokenExpiresSec)) {
       const refreshResponse = await this.doFetch(
-        '/currentuser/token', 'POST', null);
+        '/currentuser/token',
+        'POST',
+        null
+      );
       this.token = refreshResponse.token;
       this.tokenExpiresSec = refreshResponse.token_expires_sec;
     }
@@ -67,10 +94,10 @@ class ChromeStatusClient {
 
   /* Make a JSON API call to the server, including an XSRF header.
    * Then strip off the defensive prefix from the response. */
-  async doFetch(resource, httpMethod, body, includeToken=true) {
+  async doFetch(resource, httpMethod, body, includeToken = true) {
     const url = this.baseUrl + resource;
     const headers = {
-      'accept': 'application/json',
+      accept: 'application/json',
       'content-type': 'application/json',
     };
     if (includeToken) {
@@ -92,13 +119,15 @@ class ChromeStatusClient {
         `Got error response from server ${resource}: ${response.status}`,
         resource,
         httpMethod,
-        response.status);
+        response.status
+      );
     }
     const rawResponseText = await response.text();
-    const XSSIPrefix = ')]}\'\n';
+    const XSSIPrefix = ")]}'\n";
     if (!rawResponseText.startsWith(XSSIPrefix)) {
       throw new Error(
-          `Response does not start with XSSI prefix: ${XSSIPrefix}`);
+        `Response does not start with XSSI prefix: ${XSSIPrefix}`
+      );
     }
     return JSON.parse(rawResponseText.substr(XSSIPrefix.length));
   }
@@ -126,7 +155,6 @@ class ChromeStatusClient {
     });
   }
 
-
   // //////////////////////////////////////////////////////////////
   // Specific API calls
 
@@ -135,7 +163,7 @@ class ChromeStatusClient {
   signIn(credentialResponse) {
     const credential = credentialResponse.credential;
     // We don't use doPost because we don't already have a XSRF token.
-    return this.doFetch('/login', 'POST', {'credential': credential}, false);
+    return this.doFetch('/login', 'POST', {credential: credential}, false);
   }
 
   signOut() {
@@ -145,19 +173,21 @@ class ChromeStatusClient {
   // Cues API
 
   getDismissedCues() {
-    return this.doGet(`/currentuser/cues`);
+    return this.doGet('/currentuser/cues');
   }
 
   dismissCue(cue) {
-    return this.doPost('/currentuser/cues', {cue: cue})
-      .then((res) => res);
+    return this.doPost('/currentuser/cues', {cue: cue}).then(res => res);
     // TODO: catch((error) => { display message }
   }
 
   // Permissions API
-  getPermissions() {
-    return this.doGet('/currentuser/permissions')
-      .then((res) => res.user);
+  getPermissions(returnPairedUser = false) {
+    let url = '/currentuser/permissions';
+    if (returnPairedUser) {
+      url += '?returnPairedUser';
+    }
+    return this.doGet(url).then(res => res.user);
   }
 
   // Settings API
@@ -173,16 +203,15 @@ class ChromeStatusClient {
   // Star API
 
   getStars() {
-    return this.doGet('/currentuser/stars')
-      .then((res) => res.featureIds);
+    return this.doGet('/currentuser/stars').then(res => res.featureIds);
     // TODO: catch((error) => { display message }
   }
 
   setStar(featureId, starred) {
-    return this.doPost(
-      '/currentuser/stars',
-      {featureId: featureId, starred: starred})
-      .then((res) => res);
+    return this.doPost('/currentuser/stars', {
+      featureId: featureId,
+      starred: starred,
+    }).then(res => res);
     // TODO: catch((error) => { display message }
   }
 
@@ -206,20 +235,21 @@ class ChromeStatusClient {
   }
 
   setVote(featureId, gateId, state) {
-    return this.doPost(
-        `/features/${featureId}/votes/${gateId}`,
-        {state: Number(state)});
+    return this.doPost(`/features/${featureId}/votes/${gateId}`, {
+      state: Number(state),
+    });
   }
 
   getGates(featureId) {
     return this.doGet(`/features/${featureId}/gates`);
   }
 
+  getPendingGates() {
+    return this.doGet('/gates/pending');
+  }
+
   updateGate(featureId, gateId, assignees) {
-    return this.doPost(
-        `/features/${featureId}/gates/${gateId}`,
-        {assignees,
-        });
+    return this.doPost(`/features/${featureId}/gates/${gateId}`, {assignees});
   }
 
   getComments(featureId, gateId) {
@@ -233,67 +263,73 @@ class ChromeStatusClient {
   postComment(featureId, gateId, comment, postToThreadType) {
     if (gateId) {
       return this.doPost(
-          `/features/${featureId}/approvals/${gateId}/comments`,
-          {comment, postToThreadType});
+        `/features/${featureId}/approvals/${gateId}/comments`,
+        {comment, postToThreadType}
+      );
     } else {
-      return this.doPost(
-          `/features/${featureId}/approvals/comments`,
-          {comment, postToThreadType});
+      return this.doPost(`/features/${featureId}/approvals/comments`, {
+        comment,
+        postToThreadType,
+      });
     }
   }
 
   deleteComment(featureId, commentId) {
-    return this.doPatch(
-      `/features/${featureId}/approvals/comments`,
-      {commentId, isUndelete: false},
-    );
+    return this.doPatch(`/features/${featureId}/approvals/comments`, {
+      commentId,
+      isUndelete: false,
+    });
   }
 
   undeleteComment(featureId, commentId) {
-    return this.doPatch(
-      `/features/${featureId}/approvals/comments`,
-      {commentId, isUndelete: true},
-    );
+    return this.doPatch(`/features/${featureId}/approvals/comments`, {
+      commentId,
+      isUndelete: true,
+    });
   }
 
   // Features API
   async getFeature(featureId) {
-    return this.doGet(`/features/${featureId}`)
-      .catch((error) => {
-        // If not the ChromeStatusHttpError, continue throwing.
-        if (!(error instanceof ChromeStatusHttpError)) {
-          throw error;
-        }
-        // Else, do further validations
-        if (error.status === 404) {
-          throw new FeatureNotFoundError(featureId);
-        }
-        // No other special cases means, we can re throw the error.
+    return this.doGet(`/features/${featureId}`).catch(error => {
+      // If not the ChromeStatusHttpError, continue throwing.
+      if (!(error instanceof ChromeStatusHttpError)) {
         throw error;
-      });
+      }
+      // Else, do further validations
+      if (error.status === 404) {
+        throw new FeatureNotFoundError(featureId);
+      }
+      // No other special cases means, we can re throw the error.
+      throw error;
+    });
   }
 
   async getFeaturesInMilestone(milestone) {
     return this.doGet(`/features?milestone=${milestone}`).then(
-      (resp) => resp['features_by_type']);
+      resp => resp['features_by_type']
+    );
   }
 
   async getFeaturesForEnterpriseReleaseNotes(milestone) {
     return this.doGet(`/features?releaseNotesMilestone=${milestone}`);
   }
 
-  async searchFeatures(userQuery, sortSpec, start, num) {
-    let url = `/features?q=${userQuery}`;
+  async searchFeatures(userQuery, showEnterprise, sortSpec, start, num) {
+    const query = new URLSearchParams();
+    query.set('q', userQuery);
+    if (showEnterprise) {
+      query.set('showEnterprise', '');
+    }
     if (sortSpec) {
-      url += '&sort=' + sortSpec;
+      query.set('sort', sortSpec);
     }
     if (start) {
-      url += '&start=' + start;
+      query.set('start', start);
     }
     if (num) {
-      url += '&num=' + num;
+      query.set('num', num);
     }
-    return this.doGet(url);
+    return this.doGet(`/features?${query.toString()}`);
   }
 
   async updateFeature(featureChanges) {
@@ -302,8 +338,14 @@ class ChromeStatusClient {
 
   // FeatureLinks API
 
-  async getFeatureLinks(featureId, updateStaleLinks=true) {
-    return this.doGet(`/feature_links?feature_id=${featureId}&update_stale_links=${updateStaleLinks}`);
+  /**
+   * @param {number} featureId
+   * @returns {Promise<{data: FeatureLink[], has_stale_links: boolean}>}
+   */
+  async getFeatureLinks(featureId, updateStaleLinks = true) {
+    return this.doGet(
+      `/feature_links?feature_id=${featureId}&update_stale_links=${updateStaleLinks}`
+    );
   }
 
   async getFeatureLinksSummary() {
@@ -318,7 +360,9 @@ class ChromeStatusClient {
     if (isError !== undefined && isError !== null) {
       optionalParams += `&is_error=${isError}`;
     }
-    return this.doGet(`/feature_links_samples?domain=${domain}${optionalParams}`);
+    return this.doGet(
+      `/feature_links_samples?domain=${domain}${optionalParams}`
+    );
   }
 
   // Stages API
@@ -339,8 +383,20 @@ class ChromeStatusClient {
   }
 
   async addXfnGates(featureId, stageId) {
-    return this.doPost(
-        `/features/${featureId}/stages/${stageId}/addXfnGates`);
+    return this.doPost(`/features/${featureId}/stages/${stageId}/addXfnGates`);
+  }
+
+  // Origin trials API
+  async getOriginTrials() {
+    return this.doGet('/origintrials');
+  }
+
+  async createOriginTrial(featureId, stageId, body) {
+    return this.doPost(`/origintrials/${featureId}/${stageId}/create`, body);
+  }
+
+  async extendOriginTrial(featureId, stageId, body) {
+    return this.doPatch(`/origintrials/${featureId}/${stageId}/extend`, body);
   }
 
   // Processes API
@@ -355,7 +411,7 @@ class ChromeStatusClient {
 
   // Blinkcomponents API
   async getBlinkComponents() {
-    return this.doGet(`/blinkcomponents`);
+    return this.doGet('/blinkcomponents');
   }
 
   // Channels API
@@ -366,8 +422,4 @@ class ChromeStatusClient {
   async getSpecifiedChannels(start, end) {
     return this.doGet(`/channels?start=${start}&end=${end}`);
   }
-};
-
-exports.ChromeStatusClient = ChromeStatusClient;
-exports.FeatureNotFoundError = FeatureNotFoundError;
-})(window);
+}

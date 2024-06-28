@@ -13,14 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import testing_config
 from unittest import mock
-from internals.core_models import FeatureEntry
-from internals.feature_links import FeatureLinks, update_feature_links, get_domain_with_scheme, get_feature_links_summary, UpdateAllFeatureLinksHandlers
-from internals.link_helpers import LINK_TYPE_CHROMIUM_BUG, LINK_TYPE_WEB
-from google.cloud import ndb
-from datetime import datetime
+
 import flask
+from google.cloud import ndb
+
+import testing_config
+from internals.core_models import FeatureEntry
+from internals.feature_links import (
+  FeatureLinks,
+  FeatureLinksUpdateHandler,
+  UpdateAllFeatureLinksHandlers,
+  get_domain_with_scheme,
+  get_feature_links_summary,
+  update_feature_links,
+)
+from internals.link_helpers import (
+  LINK_TYPE_CHROMIUM_BUG,
+  LINK_TYPE_GITHUB_ISSUE,
+  LINK_TYPE_WEB,
+  Link,
+)
 
 test_app = flask.Flask(__name__)
 
@@ -119,7 +132,7 @@ class LinkTest(testing_config.CustomTestCase):
     )
 
   def test_feature_changed_add_and_remove_url(self):
-    url = "https://bugs.chromium.org/p/chromium/issues/detail?id=100000"
+    url = "https://github.com/GoogleChrome/chromium-dashboard/issues/999"
     query = FeatureLinks.query(FeatureLinks.url == url)
 
     changed_fields = [
@@ -132,10 +145,10 @@ class LinkTest(testing_config.CustomTestCase):
     link = query.get()
     self.assertEqual(link.url, url)
     self.assertIn(self.feature_id, link.feature_ids)
-    self.assertEqual(link.type, LINK_TYPE_CHROMIUM_BUG)
+    self.assertEqual(link.type, LINK_TYPE_GITHUB_ISSUE)
     self.assertIsNotNone(link.information)
-    self.assertEqual(link.information["summary"],
-                     "Repeated zooms leave tearing artifact")
+    self.assertEqual(link.information["title"],
+                     "Comments field is incorrectly escaped")
 
     # remove bug_url field, the link should still exist
     # because launch_bug_url field is still using it
@@ -153,7 +166,7 @@ class LinkTest(testing_config.CustomTestCase):
 
   @mock.patch('logging.error')
   def test_feature_changed_invalid_url(self, mock_error):
-    url = "https://bugs.chromium.org/p/chromium/issues/detail?id=100000000000"
+    url = "https://github.com/GoogleChrome/chromium-dashboard/issues/10000000"
     query = FeatureLinks.query(FeatureLinks.url == url)
     changed_fields = [
         ('bug_url', None, url),
@@ -164,8 +177,135 @@ class LinkTest(testing_config.CustomTestCase):
     link = query.get()
     self.assertIsNone(link)
 
+  @mock.patch.object(Link, '_parse_github_issue')
+  def test_webkit_review_saves_position_in_feature(self, mockParse: mock.MagicMock):
+    mockParse.return_value = {'labels': ['position: support']}
+
+    url = 'https://github.com/WebKit/standards-positions/issues/247'
+    query = FeatureLinks.query(FeatureLinks.url == url)
+    changed_fields = [('safari_views_link', None, url)]
+    self.mock_user_change_fields(changed_fields)
+
+    link = query.get()
+    self.assertEqual(link.information['labels'], ['position: support'])
+    self.assertEqual(
+      FeatureEntry.get_by_id(self.feature_id).safari_views_link_result, 'support'
+    )
+
+  @mock.patch.object(Link, '_parse_github_issue')
+  def test_mozilla_review_saves_position_in_feature(self, mockParse: mock.MagicMock):
+    mockParse.return_value = {'labels': ['position: defer']}
+
+    url = 'https://github.com/mozilla/standards-positions/issues/247'
+    query = FeatureLinks.query(FeatureLinks.url == url)
+    changed_fields = [('ff_views_link', None, url)]
+    self.mock_user_change_fields(changed_fields)
+
+    link = query.get()
+    self.assertEqual(link.information['labels'], ['position: defer'])
+    self.assertEqual(FeatureEntry.get_by_id(self.feature_id).ff_views_link_result, 'defer')
+
+  @mock.patch.object(Link, '_parse_github_issue')
+  def test_tag_review_saves_position_in_feature(self, mockParse: mock.MagicMock):
+    mockParse.return_value = {'labels': ['Resolution: satisfied']}
+
+    url = 'https://github.com/w3ctag/design-reviews/issues/928'
+    query = FeatureLinks.query(FeatureLinks.url == url)
+    changed_fields = [('tag_review', None, url)]
+    self.mock_user_change_fields(changed_fields)
+
+    link = query.get()
+    self.assertEqual(link.information['labels'], ['Resolution: satisfied'])
+    self.assertEqual(
+      FeatureEntry.get_by_id(self.feature_id).tag_review_resolution, 'satisfied'
+    )
+
+  @mock.patch.object(Link, '_parse_github_issue')
+  def test_removing_mozilla_review_removes_saved_position(
+    self, mockParse: mock.MagicMock
+  ):
+    self.feature.ff_views_link_result = 'garbage'
+    self.feature.put()
+
+    url = 'https://github.com/mozilla/standards-positions/issues/247'
+    changed_fields = [('ff_views_link', url, None)]
+    self.mock_user_change_fields(changed_fields)
+
+    self.assertIsNone(FeatureEntry.get_by_id(self.feature_id).ff_views_link_result)
+    mockParse.assert_not_called()
+
+  @mock.patch.object(Link, '_parse_github_issue')
+  def test_updating_links_updates_cached_position(self, mockParse: mock.MagicMock):
+    mockParse.return_value = {'labels': ['position: defer']}
+
+    url = 'https://github.com/mozilla/standards-positions/issues/247'
+    changed_fields = [('ff_views_link', None, url)]
+    self.mock_user_change_fields(changed_fields)
+
+    self.assertEqual(FeatureEntry.get_by_id(self.feature_id).ff_views_link_result, 'defer')
+
+    # The review has an updated position!
+    mockParse.return_value = {'labels': ['position: positive']}
+
+    link = FeatureLinks.query(FeatureLinks.url == url).get()
+    update_feature_links = FeatureLinksUpdateHandler()
+    with test_app.test_request_context(
+      '/tasks/update-feature-links', json={'feature_link_ids': [link.key.id()]}
+    ):
+      update_feature_links.process_post_data()
+
+    self.assertEqual(
+      FeatureEntry.get_by_id(self.feature_id).ff_views_link_result, 'positive'
+    )
+
+  @mock.patch.object(Link, '_parse_github_issue')
+  def test_adding_link_to_second_feature_saves_position_in_second_feature(
+    self, mockParse: mock.MagicMock
+  ):
+    mockParse.return_value = {'labels': ['position: defer']}
+
+    url = 'https://github.com/mozilla/standards-positions/issues/247'
+    changed_fields = [('ff_views_link', None, url)]
+    self.mock_user_change_fields(changed_fields)
+    self.assertEqual(1, mockParse.call_count)
+    self.assertEqual(
+      FeatureEntry.get_by_id(self.feature_id).ff_views_link_result, 'defer'
+    )
+    self.assertEqual(
+      FeatureEntry.get_by_id(self.feature2_id).ff_views_link_result, None
+    )
+    self.mock_user_change_fields(changed_fields, self.feature2)
+    self.assertEqual(
+      1, mockParse.call_count, 'Should re-use the link created for the first feature.'
+    )
+    self.assertEqual(
+      FeatureEntry.get_by_id(self.feature2_id).ff_views_link_result, 'defer'
+    )
+
+  @mock.patch.object(Link, '_parse_github_issue')
+  def test_denormalizing_github_link_without_information_doesnt_crash(
+    self, mockParse: mock.MagicMock
+  ):
+    mockParse.return_value = {'labels': ['position: defer']}
+
+    url = 'https://github.com/mozilla/standards-positions/issues/247'
+    fl = FeatureLinks(
+      feature_ids=[self.feature_id, self.feature2_id],
+      type=LINK_TYPE_GITHUB_ISSUE,
+      url=url,
+      information=None,
+    )
+    fl.put()
+    changed_fields = [('ff_views_link', None, url)]
+    self.mock_user_change_fields(changed_fields)
+
+    # It would be fine for this to become 'defer' instead of None.
+    self.assertEqual(
+      FeatureEntry.get_by_id(self.feature_id).ff_views_link_result, None
+    )
+
   def test_features_with_same_link(self):
-    url = "https://bugs.chromium.org/p/chromium/issues/detail?id=100000"
+    url = "https://github.com/GoogleChrome/chromium-dashboard/issues/999"
     query = FeatureLinks.query(FeatureLinks.url == url)
     changed_fields = [
         ('bug_url', None, url),
@@ -195,7 +335,7 @@ class LinkTest(testing_config.CustomTestCase):
         ),
         # link type changed
         FeatureLinks(
-            url='https://bugs.chromium.org/p/chromium/issues/detail?id=100000',
+            url='https://github.com/GoogleChrome/chromium-dashboard/issues/999',
             type=LINK_TYPE_WEB
         ),
         # link with error
@@ -211,5 +351,5 @@ class LinkTest(testing_config.CustomTestCase):
     with test_app.test_request_context('/cron/update_all_feature_links', query_string={'should_notify_on_error': False}):
       result = update_all_feature_links.get_template_data()
     expected = 'Started updating 2 Feature Links in 1 batches'
-    
+
     self.assertEqual(result, expected)

@@ -18,6 +18,8 @@ __author__ = 'ericbidelman@chromium.org (Eric Bidelman)'
 from datetime import datetime, timedelta
 import collections
 import logging
+import difflib
+import re
 from typing import Any, Optional
 import urllib
 
@@ -33,8 +35,10 @@ from framework import users
 import settings
 from internals import approval_defs
 from internals import core_enums
+from internals.data_types import StageDict
 from internals import stage_helpers
 from internals.core_models import FeatureEntry, MilestoneSet, Stage
+from internals.data_types import StageDict
 from internals.review_models import Gate
 from internals.user_models import (
     AppUser, BlinkComponent, FeatureOwner, UserPref)
@@ -63,6 +67,22 @@ def _determine_milestone_string(ship_stages: list[Stage]) -> str:
     milestone_str = f'{first_android} (android)'
   return milestone_str
 
+def highlight_diff(old_text, new_text, highlight_type):
+  differ = difflib.ndiff(
+      re.split(r'(\W)', old_text), re.split(r'(\W)', new_text))
+  highlighted_text = []
+  for item in differ:
+    text = escape(item[2:])
+    if not text: continue
+    if item.startswith('-') and highlight_type == 'deletion':
+      highlighted_text.append(
+          f'<span style="background:#FDD">{text}</span>')
+    elif item.startswith('+') and highlight_type == 'addition':
+      highlighted_text.append(
+          f'<span style="background:#DFD">{text}</span>')
+    elif item.startswith(' '):
+      highlighted_text.append(text)
+  return ''.join(highlighted_text)
 
 def format_email_body(
     template_path, fe: FeatureEntry, changes: list[dict[str, Any]],
@@ -75,13 +95,20 @@ def format_email_body(
 
   formatted_changes = ''
   for prop in changes:
-    prop_name = prop['prop_name']
+    prop_name = escape(prop['prop_name'])  # Ensure to escape
     new_val = prop['new_val']
     old_val = prop['old_val']
 
-    formatted_changes += ('<li><b>%s:</b> <br/><b>old:</b> %s <br/>'
-                          '<b>new:</b> %s<br/></li><br/>' %
-                          (prop_name, escape(old_val), escape(new_val)))
+    # Escaping values before passing to highlight_diff
+    highlighted_old_val = highlight_diff(old_val, new_val, 'deletion')
+    highlighted_new_val = highlight_diff(old_val, new_val, 'addition')
+
+    # Using f-strings for clear formatting
+    formatted_changes += (
+        f'<li><b>{prop_name}:</b><br/>'
+        f'<b>old:</b> {highlighted_old_val}<br/>'
+        f'<b>new:</b> {highlighted_new_val}<br/></li><br/>')
+
   if not formatted_changes:
     formatted_changes = '<li>None</li>'
 
@@ -97,6 +124,7 @@ def format_email_body(
       'milestone': milestone_str,
       'status': core_enums.IMPLEMENTATION_STATUS[fe.impl_status_chrome],
       'formatted_changes': formatted_changes,
+      'APP_TITLE': settings.APP_TITLE,
       'SITE_URL': settings.SITE_URL,
   }
   body_data.update(additional_template_data or {})
@@ -195,8 +223,9 @@ def add_core_receivers(fe: FeatureEntry, addr_reasons: dict[str, list[str]]):
   )
 
 
-def make_feature_changes_email(fe: FeatureEntry, is_update: bool=False,
-    changes: Optional[list]=None):
+def make_feature_changes_email(
+    fe: FeatureEntry, is_update: bool=False, changes: Optional[list]=None,
+    triggering_user_email: Optional[str]=None):
   """Return a list of task dicts to notify users of feature changes."""
   if changes is None:
     changes = []
@@ -206,14 +235,15 @@ def make_feature_changes_email(fe: FeatureEntry, is_update: bool=False,
 
   if is_update:
     subject = 'updated feature: %s' % fe.name
-    triggering_user_email = fe.updater_email
+    triggering_user_email = triggering_user_email or fe.updater_email
     template_path = 'update-feature-email.html'
   else:
     subject = 'new feature: %s' % fe.name
     triggering_user_email = fe.creator_email
     template_path = 'new-feature-email.html'
 
-  email_html = format_email_body(template_path, fe, changes)
+  email_html = format_email_body(
+      template_path, fe, changes, updater_email=triggering_user_email)
 
   addr_reasons: dict[str, list[str]] = collections.defaultdict(list)
 
@@ -264,57 +294,6 @@ def add_reviewers(
     reasons = 'You are a reviewer for this type of gate'
 
   accumulate_reasons(addr_reasons, recipients, reasons)
-
-
-def make_review_assignment_email(
-    fe: FeatureEntry, gate_type: int, triggering_user_email: str,
-    old_assignees: list[str], new_assignees: list[str]):
-  """Return a list of task dicts to notify assigned reviewers."""
-  change = {
-      'prop_name': 'Assigned reiewer',
-      'old_val': ', '.join(old_assignees) or 'None',
-      'new_val': ', '.join(new_assignees) or 'None',
-  }
-  email_html = format_email_body(
-      'update-feature-email.html', fe, [change],
-      updater_email=triggering_user_email)
-
-  subject = 'Review assigned for feature: %s' % fe.name
-
-  approvers = approval_defs.get_approvers(gate_type)
-  reasons = 'You received a review request for this feature'
-
-  addr_reasons: dict[str, list[str]] = collections.defaultdict(list)
-  accumulate_reasons(
-      addr_reasons, old_assignees, 'The review was previously assigned to you')
-  accumulate_reasons(
-      addr_reasons, new_assignees, 'The review is now assigned to you')
-
-  all_tasks = [convert_reasons_to_task(
-                   addr, reasons, email_html, subject, triggering_user_email)
-               for addr, reasons in sorted(addr_reasons.items())]
-  return all_tasks
-
-
-def make_new_comments_email(
-    fe: FeatureEntry, gate_type: int, changes: Optional[list]=None):
-  """Return a list of task dicts to notify of new comments."""
-  if changes is None:
-    changes = []
-  fe_stages = stage_helpers.get_feature_stages(fe.key.integer_id())
-  email_html = format_email_body('update-feature-email.html', fe, changes)
-
-  subject = 'New comments for feature: %s' % fe.name
-  triggering_user_email = fe.updater_email
-
-  addr_reasons: dict[str, list[str]] = collections.defaultdict(list)
-  add_core_receivers(fe, addr_reasons)
-  add_reviewers(fe, gate_type, addr_reasons)
-
-  all_tasks = [convert_reasons_to_task(
-                   addr, reasons, email_html, subject, triggering_user_email)
-               for addr, reasons in sorted(addr_reasons.items())]
-  return all_tasks
 
 
 class FeatureStar(ndb.Model):
@@ -459,6 +438,8 @@ class FeatureChangeHandler(basehandlers.FlaskHandler):
     feature = self.get_param('feature')
     is_update = self.get_bool_param('is_update')
     changes = self.get_param('changes', required=False) or []
+    triggering_user_email = self.get_param(
+        'triggering_user_email', required=False)
 
     logging.info('Starting to notify subscribers for feature %s',
                  repr(feature)[:settings.MAX_LOG_LINE])
@@ -468,7 +449,9 @@ class FeatureChangeHandler(basehandlers.FlaskHandler):
     # Load feature directly from NDB so as to never get a stale cached copy.
     fe = FeatureEntry.get_by_id(feature['id'])
     if fe and (is_update and len(changes) or not is_update):
-      email_tasks = make_feature_changes_email(fe, is_update=is_update, changes=changes)
+      email_tasks = make_feature_changes_email(
+          fe, is_update=is_update, changes=changes,
+          triggering_user_email=triggering_user_email)
       send_emails(email_tasks)
 
     return {'message': 'Done'}
@@ -545,52 +528,236 @@ class ReviewAssignmentHandler(basehandlers.FlaskHandler):
   """This task handles feature review assignments by making email tasks."""
 
   IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'review-assigned-email.html'
 
   def process_post_data(self, **kwargs):
     self.require_task_header()
 
     feature = self.get_param('feature')
     gate_type = self.get_param('gate_type')
+    gate_url = self.get_param('gate_url')
     triggering_user_email = self.get_param('triggering_user_email')
     old_assignees = self.get_param('old_assignees')
     new_assignees = self.get_param('new_assignees')
+
+    team_name = None
+    appr_def = approval_defs.APPROVAL_FIELDS_BY_ID.get(gate_type)
+    if appr_def:
+      team_name = appr_def.team_name
 
     logging.info('Starting to notify assignees for feature %s',
                  repr(feature)[:settings.MAX_LOG_LINE])
 
     fe = FeatureEntry.get_by_id(feature['id'])
     if fe:
-      email_tasks = make_review_assignment_email(
-          fe, gate_type, triggering_user_email, old_assignees, new_assignees)
+      additional_template_data = {
+          'gate_url': gate_url,
+          'updater_email': triggering_user_email,
+          'team_name': team_name,
+      }
+      email_tasks = self.make_review_assignment_email(
+          fe, triggering_user_email, old_assignees, new_assignees,
+          additional_template_data)
       send_emails(email_tasks)
 
     return {'message': 'Done'}
+
+  def make_review_assignment_email(
+      self, fe: FeatureEntry, triggering_user_email: str,
+      old_assignees: list[str], new_assignees: list[str],
+      additional_template_data: dict[str, str]):
+    """Return a list of task dicts to notify assigned reviewers."""
+    changed_prop = {
+        'prop_name': 'Assigned reviewer',
+        'old_val': ', '.join(old_assignees or ['None']),
+        'new_val': ', '.join(new_assignees or ['None']),
+    }
+    email_html = format_email_body(
+        self.EMAIL_TEMPLATE_PATH, fe, [changed_prop],
+        additional_template_data=additional_template_data)
+
+    subject = 'Review assigned for feature: %s' % fe.name
+
+    addr_reasons: dict[str, list[str]] = collections.defaultdict(list)
+    accumulate_reasons(
+        addr_reasons, old_assignees,
+        'The review was previously assigned to you')
+    accumulate_reasons(
+        addr_reasons, new_assignees, 'The review is now assigned to you')
+
+    all_tasks = [
+        convert_reasons_to_task(
+            addr, reasons, email_html, subject, triggering_user_email)
+        for addr, reasons in sorted(addr_reasons.items())]
+    return all_tasks
 
 
 class FeatureCommentHandler(basehandlers.FlaskHandler):
   """This task handles feature comment notifications by making email tasks."""
 
   IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'review-comment-notification-email.html'
 
   def process_post_data(self, **kwargs):
     self.require_task_header()
 
     feature = self.get_param('feature')
     gate_type = self.get_param('gate_type')
-    changes = self.get_param('changes', required=False) or []
+    gate_url = self.get_param('gate_url')
+    triggering_user_email = self.get_param('triggering_user_email')
+    content = self.get_param('content')
 
     logging.info('Starting to notify of comments for feature %s',
                  repr(feature)[:settings.MAX_LOG_LINE])
 
     fe = FeatureEntry.get_by_id(feature['id'])
     if fe:
-      email_tasks = make_new_comments_email(fe, gate_type, changes)
+      additional_template_data = {
+          'gate_url': gate_url,
+          'triggering_user_email': triggering_user_email,
+          'content': content,
+      }
+      email_tasks = self.make_new_comments_email(
+          fe, gate_type, triggering_user_email, additional_template_data)
       send_emails(email_tasks)
 
     return {'message': 'Done'}
 
+  def make_new_comments_email(
+      self, fe: FeatureEntry, gate_type: int, triggering_user_email: str,
+      additional_template_data: dict[str, str]):
+    """Return a list of task dicts to notify of new comments."""
+    email_html = format_email_body(
+        self.EMAIL_TEMPLATE_PATH, fe, [],
+        additional_template_data=additional_template_data)
 
-class OriginTrialCreationRequestHandler(basehandlers.FlaskHandler):
+    subject = 'New comments for feature: %s' % fe.name
+
+    addr_reasons: dict[str, list[str]] = collections.defaultdict(list)
+    add_core_receivers(fe, addr_reasons)
+    add_reviewers(fe, gate_type, addr_reasons)
+
+    all_tasks = [convert_reasons_to_task(
+        addr, reasons, email_html, subject, triggering_user_email)
+                 for addr, reasons in sorted(addr_reasons.items())]
+    return all_tasks
+
+
+class OTActivatedHandler(basehandlers.FlaskHandler):
+  """Notify about an origin trial being activated."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-activated-email.html'
+
+  def process_post_data(self, **kwargs):
+    stage = self.get_param('stage', required=True)
+    contacts = stage['ot_emails'] or []
+    contacts.append('ot_owner_email')
+    send_emails([self.build_email(stage, contacts)])
+    return {'message': 'OK'}
+
+  def build_email(self, stage: StageDict, contacts: list[str]) -> dict:
+    body_data = {
+      'stage': stage,
+      'ot_url': f'{settings.OT_URL}#/view_trial/{stage["origin_trial_id"]}',
+      'chromestatus_url': ('https://chromestatus.com/feature/'
+                           f'{stage["feature_id"]}')
+    }
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': contacts,
+      'subject': f'{stage["ot_display_name"]} origin trial is now available',
+      'reply_to': None,
+      'html': body,
+    }
+
+class OTCreationProcessedHandler(basehandlers.FlaskHandler):
+  """Notify about an origin trial creation request being processed,
+  but activation is at a later date.
+  """
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-creation-processed-email.html'
+
+  def process_post_data(self, **kwargs):
+    stage = self.get_param('stage', required=True)
+    contacts = stage['ot_emails'] or []
+    contacts.append('ot_owner_email')
+    send_emails([self.build_email(stage, contacts)])
+    return {'message': 'OK'}
+
+  def build_email(self, stage: dict[str, Any], contacts: list[str]) -> dict:
+    body_data = {
+      'stage': stage,
+      'ot_url': settings.OT_URL,
+      'chromestatus_url': ('https://chromestatus.com/feature/'
+                           f'{stage["feature_id"]}')
+    }
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': contacts,
+      'subject': (f'{stage["ot_display_name"]} origin trial has been created '
+                  f'and will begin {stage["ot_activation_date"]}'),
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTCreationRequestFailedHandler(basehandlers.FlaskHandler):
+  """Notify about an origin trial creation request failing automated request."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-creation-request-failed-email.html'
+
+  def process_post_data(self, **kwargs):
+    stage = self.get_param('stage', required=True)
+    send_emails([self.build_email(stage)])
+    return {'message': 'OK'}
+
+  def build_email(self, stage: StageDict) -> dict:
+    body_data = {
+      'stage': stage,
+      'chromestatus_url': ('https://chromestatus.com/feature/'
+                           f'{stage["feature_id"]}')
+    }
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': OT_SUPPORT_EMAIL,
+      'subject': ('Automated trial creation request failed for '
+                  f'{stage["ot_display_name"]}'),
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTActivationFailedHandler(basehandlers.FlaskHandler):
+  """Notify about an origin trial activation automated request failing."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-activation-failed-email.html'
+
+  def process_post_data(self, **kwargs):
+    stage = self.get_param('stage', required=True)
+    send_emails([self.build_email(stage)])
+    return {'message': 'OK'}
+
+  def build_email(self, stage: StageDict) -> dict:
+    body_data = {
+      'stage': stage,
+      'chromestatus_url': ('https://chromestatus.com/feature/'
+                           f'{stage["feature_id"]}')
+    }
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': OT_SUPPORT_EMAIL,
+      'subject': ('Automated trial activation request failed for '
+                  f'{stage["ot_display_name"]}'),
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTCreationRequestHandler(basehandlers.FlaskHandler):
   """Notify about an origin trial creation request."""
 
   IS_INTERNAL_HANDLER = True
@@ -654,46 +821,251 @@ class OriginTrialCreationRequestHandler(basehandlers.FlaskHandler):
       'html': email_body,
     }
 
-class OriginTrialExtensionRequestHandler(basehandlers.FlaskHandler):
-  """Notify about an origin trial extension request."""
+
+class OTExtensionApprovedHandler(basehandlers.FlaskHandler):
+  """Notify about an origin trial extension that is approved and needs
+  finalized.
+  """
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-extension-approved-email.html'
+
+  def process_post_data(self, **kwargs):
+    feature = self.get_param('feature')
+    if feature is None:
+      self.abort(400, 'No feature provided.')
+    gate_id = self.get_param('gate_id')
+    if gate_id is None:
+      self.abort(400, 'Extension gate ID not provided.')
+    requester_email = self.get_param('requester_email')
+    if not requester_email:
+      self.abort(400, 'Extension requester\'s email address not provided.')
+    logging.info('Starting to notify about successful origin trial extension.')
+    send_emails([self.build_email(feature, requester_email, gate_id)])
+
+    return {'message': 'OK'}
+
+  def build_email(
+      self, feature: FeatureEntry, requester_email: str, gate_id: int):
+    body_data = {
+      'feature': feature,
+      'id': feature['id'],
+      'gate_id': gate_id,
+      'SITE_URL': settings.SITE_URL,
+    }
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+
+    return {
+      'to': requester_email,
+      'cc': [OT_SUPPORT_EMAIL],
+      'subject': ('Origin trial approved and ready to be initiated: '
+                  f'{feature["name"]}'),
+      'reply_to': None,
+      'html': body,
+    }
+
+
+GLOBAL_OT_PROCESS_REMINDER_CC_LIST = [
+  OT_SUPPORT_EMAIL,
+  'origin-trials-timeline-updates@google.com'
+  ]
+
+class OTEndingNextReleaseReminderHandler(basehandlers.FlaskHandler):
+  """Send origin trial ending next release reminder email to OT contacts."""
 
   IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-ending-next-release-email.html'
+
+  def process_post_data(self, **kwargs):
+    contacts = self.get_param('contacts')
+    body_data = {
+      'name': self.get_param('name'),
+      'release_milestone': self.get_param('release_milestone'),
+      'after_end_release': self.get_param('after_end_release'),
+      'after_end_date': self.get_param('after_end_date'),
+    }
+    send_emails([self.build_email(body_data, contacts)])
+    return {'message': 'OK'}
+
+  def build_email(self, body_data: dict[str, Any], contacts: list[str]):
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': contacts,
+      'cc': GLOBAL_OT_PROCESS_REMINDER_CC_LIST,
+      'subject': f'{body_data["name"]} origin trial ship decision approaching',
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTEndingThisReleaseReminderHandler(basehandlers.FlaskHandler):
+  """Send origin trial ending this release reminder email to OT contacts."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-ending-this-release-email.html'
+
+  def process_post_data(self, **kwargs):
+    name = self.get_param('name')
+    release_milestone = self.get_param('release_milestone')
+    next_release = self.get_param('next_release')
+    contacts = self.get_param('contacts')
+    body_data = {
+      'name': name,
+      'release_milestone': release_milestone,
+      'next_release': next_release,
+    }
+    send_emails([self.build_email(body_data, contacts)])
+    return {'message': 'OK'}
+
+  def build_email(self, body_data: dict[str, Any], contacts: list[str]):
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': contacts,
+      'cc': GLOBAL_OT_PROCESS_REMINDER_CC_LIST,
+      'subject': f'{body_data["name"]} origin trial needs blink-dev update',
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTBetaAvailabilityReminderHandler(basehandlers.FlaskHandler):
+  """Send origin trial beta availability reminder email to OT contacts."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-beta-availability-email.html'
+
+  def process_post_data(self, **kwargs):
+    contacts = self.get_param('contacts')
+    body_data = {
+      'name': self.get_param('name'),
+      'release_milestone': self.get_param('release_milestone'),
+    }
+    send_emails([self.build_email(body_data, contacts)])
+    return {'message': 'OK'}
+
+  def build_email(self, body_data: dict[str, Any], contacts: list[str]):
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': contacts,
+      'cc': GLOBAL_OT_PROCESS_REMINDER_CC_LIST,
+      'subject': f'{body_data["name"]} origin trial is entering beta',
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTFirstBranchReminderHandler(basehandlers.FlaskHandler):
+  """Send origin trial first branch reminder email to OT contacts."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-first-branch-email.html'
+
+  def process_post_data(self, **kwargs):
+    contacts = self.get_param('contacts')
+    body_data = {
+      'name': self.get_param('name'),
+      'release_milestone': self.get_param('release_milestone'),
+      'branch_date': self.get_param('branch_date')
+    }
+    send_emails([self.build_email(body_data, contacts)])
+    return {'message': 'OK'}
+
+  def build_email(self, body_data: dict[str, Any], contacts: list[str]):
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': contacts,
+      'cc': GLOBAL_OT_PROCESS_REMINDER_CC_LIST,
+      'subject': f'{body_data["name"]} origin trial is branching',
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTLastBranchReminderHandler(basehandlers.FlaskHandler):
+  """Send origin trial last branch reminder email to OT contacts."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-last-branch-email.html'
+
+  def process_post_data(self, **kwargs):
+    contacts = self.get_param('contacts')
+    body_data = {
+      'name': self.get_param('name'),
+      'release_milestone': self.get_param('release_milestone'),
+      'branch_date': self.get_param('branch_date')
+    }
+    send_emails([self.build_email(body_data, contacts)])
+    return {'message': 'OK'}
+
+  def build_email(self, body_data: dict[str, Any], contacts: list[str]):
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': contacts,
+      'cc': GLOBAL_OT_PROCESS_REMINDER_CC_LIST,
+      'subject': (f'{body_data["name"]} '
+                  'origin trial has branched for its last release'),
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTAutomatedProcessEmailHandler(basehandlers.FlaskHandler):
+  """Send a final notification to OT support with automated reminder info."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-automated-process-email.html'
+
+  def process_post_data(self, **kwargs):
+    now_date = datetime.now().strftime('%d %B, %Y')
+    body_data = {
+      'email_date': now_date,
+      'send_count': self.get_param('send_count'),
+      'next_branch_milestone': self.get_param('next_branch_milestone'),
+      'next_branch_date': self.get_param('next_branch_date'),
+      'stable_milestone': self.get_param('stable_milestone'),
+      'stable_date': self.get_param('stable_date'),
+    }
+    send_emails([self.build_email(body_data)])
+    return {'message': 'OK'}
+
+  def build_email(self, body_data: dict[str, Any]):
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
+    return {
+      'to': OT_SUPPORT_EMAIL,
+      'subject': 'Origin trials automated process reminder just ran',
+      'reply_to': None,
+      'html': body,
+    }
+
+
+class OTExtendedHandler(basehandlers.FlaskHandler):
+  """Notify about an origin trial extension being completed."""
+
+  IS_INTERNAL_HANDLER = True
+  EMAIL_TEMPLATE_PATH = 'origintrials/ot-extended-email.html'
 
   def process_post_data(self, **kwargs):
     extension_stage = self.get_param('stage')
     ot_stage = self.get_param('ot_stage')
-    logging.info('Starting to notify about origin trial extension request.')
-    send_emails([self.make_extension_request_email(extension_stage, ot_stage)])
+    logging.info('Starting to notify about successful origin trial extension.')
+    send_emails([self.build_email(extension_stage, ot_stage)])
 
     return {'message': 'OK'}
 
-  def _yes_or_no(self, value: bool):
-    return 'Yes' if value else 'No'
-
-  def make_extension_request_email(self, extension_stage, ot_stage):
-    email_body = f"""
-<p>
-  Requested by: {extension_stage["ot_owner_email"]}
-  <br>
-  Feature name: {ot_stage["ot_display_name"]}
-  <br>
-  Intent to Extend Experiment URL: {extension_stage["intent_thread_url"]}
-  <br>
-  New end milestone: {extension_stage["desktop_last"]}
-  <br>
-  Anything else?: {extension_stage["ot_request_note"]}
-  <br>
-  <br>
-  Instructions for handling this request can be found at: https://g3doc.corp.google.com/chrome/origin_trials/g3doc/trial_admin.md#extend-an-existing-trial
-</p>
-"""
+  def build_email(self, extension_stage, ot_stage):
+    body_data = {
+      'extension_stage': extension_stage,
+      'ot_stage': ot_stage
+    }
+    body = render_template(self.EMAIL_TEMPLATE_PATH, **body_data)
 
     return {
       'to': OT_SUPPORT_EMAIL,
-      'subject': f'New Trial Extension Request for {ot_stage["ot_display_name"]}',
+      'subject': ('Origin trial extension processed: '
+                  f'{ot_stage["ot_display_name"]}'),
       'reply_to': None,
-      'html': email_body,
+      'html': body,
     }
+
 
 BLINK_DEV_ARCHIVE_URL_PREFIX = (
     'https://groups.google.com/a/chromium.org/d/msgid/blink-dev/')
@@ -738,24 +1110,30 @@ def send_emails(email_tasks):
   """Process a list of email tasks (send or log)."""
   logging.info('Processing %d email tasks', len(email_tasks))
   for task in email_tasks:
+    logging.info(
+        'Working on the following email:\n'
+        'To: %s\n'
+        'Cc: %s\n'
+        'From: %s\n'
+        'References: %s\n'
+        'Reply-To: %s\n'
+        'Subject: %s\n'
+        'Body:\n%s',
+        task.get('to', None),
+        task.get('cc', None),
+        task.get('from_user', None),
+        task.get('references', None),
+        task.get('reply_to', None),
+        task.get('subject', None),
+        task.get('html', "")[:settings.MAX_LOG_LINE])
     if settings.SEND_EMAIL:
-      cloud_tasks_helpers.enqueue_task(
-          '/tasks/outbound-email', task)
+      try:
+        cloud_tasks_helpers.enqueue_task(
+            '/tasks/outbound-email', task)
+      except e:
+        logging.exception('could not enqueue.')
     else:
-      logging.info(
-          'Would send the following email:\n'
-          'To: %s\n'
-          'From: %s\n'
-          'References: %s\n'
-          'Reply-To: %s\n'
-          'Subject: %s\n'
-          'Body:\n%s',
-          task.get('to', None),
-          task.get('from_user', None),
-          task.get('references', None),
-          task.get('reply_to', None),
-          task.get('subject', None),
-          task.get('html', "")[:settings.MAX_LOG_LINE])
+      logging.info('Not enqueued because of settings.SEND_EMAIL')
 
 
 def post_comment_to_mailing_list(

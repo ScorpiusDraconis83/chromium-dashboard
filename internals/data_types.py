@@ -45,6 +45,7 @@ class StageDict(TypedDict):
   extensions: list[StageDict]  # type: ignore
   origin_trial_feedback_url: str | None
   ot_action_requested: bool
+  ot_activation_date: NotRequired[str | None]
   ot_approval_buganizer_component: int | None
   ot_approval_criteria_url: str | None
   ot_approval_group_email: str | None
@@ -59,6 +60,7 @@ class StageDict(TypedDict):
   ot_is_deprecation_trial: bool
   ot_owner_email: str | None
   ot_require_approvals: bool
+  ot_setup_status: NotRequired[int]
   ot_webfeature_use_counter: str | None
   ot_request_note: NotRequired[str]
 
@@ -212,6 +214,7 @@ class VerboseFeatureDict(TypedDict):
   screenshot_links: list[str]
   first_enterprise_notification_milestone: int | None
   breaking_change: bool
+  enterprise_impact: int
 
   # Implementation in Chrome
   flag_name: str | None

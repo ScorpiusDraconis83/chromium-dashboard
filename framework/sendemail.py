@@ -47,20 +47,43 @@ def get_param(request, name, required=True):
   return val
 
 
+def format_staging_email(addr: str) -> str:
+  """Format emails addresses to be redirected for staging logging."""
+  if not settings.SEND_ALL_EMAIL_TO:
+    return ''
+  to_user, to_domain = addr.split('@')
+  return settings.SEND_ALL_EMAIL_TO % {'user': to_user, 'domain': to_domain}
+
+
 def handle_outbound_mail_task():
   """Task to send a notification email to one recipient."""
   require_task_header()
+  json_body = flask.request.get_json(force=True)
+  logging.info('params: %r', json_body)
 
   to = get_param(flask.request, 'to')
+  cc = get_param(flask.request, 'cc', required=False)
   from_user = get_param(flask.request, 'from_user', required=False)
   subject = get_param(flask.request, 'subject')
   email_html = get_param(flask.request, 'html')
   references = get_param(flask.request, 'references', required=False)
   reply_to = get_param(flask.request, 'reply_to', required=False)
 
+  if isinstance(to, str):
+    to = [to]
+  if isinstance(cc, str):
+    cc = [cc]
+
   if settings.SEND_ALL_EMAIL_TO and to != settings.REVIEW_COMMENT_MAILING_LIST:
-    to_user, to_domain = to.split('@')
-    to = settings.SEND_ALL_EMAIL_TO % {'user': to_user, 'domain': to_domain}
+    to = [format_staging_email(addr) for addr in to]
+
+    if cc:
+      new_cc = []
+      for cc_addr in cc:
+        cc_user, cc_domain = cc_addr.split('@')
+        new_cc.append(
+            settings.CC_ALL_EMAIL_TO % {'user': cc_user, 'domain': cc_domain})
+      cc = new_cc
 
   sender = 'Chromestatus <admin@%s.appspotmail.com>' % settings.APP_ID
   if from_user:
@@ -72,6 +95,8 @@ def handle_outbound_mail_task():
   if reply_to:
     message.reply_to = reply_to
   message.check_initialized()
+  if cc:
+    message.cc = cc
 
   if references:
     message.headers = {
@@ -82,6 +107,8 @@ def handle_outbound_mail_task():
   logging.info('Will send the following email:\n')
   logging.info('Sender: %s', message.sender)
   logging.info('To: %s', message.to)
+  if cc:
+    logging.info('Cc: %s', message.cc)
   logging.info('Subject: %s', message.subject)
   if reply_to:
     logging.info('Reply-To: %s', message.reply_to)

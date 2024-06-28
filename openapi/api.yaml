@@ -13,9 +13,465 @@ info:
     name: Apache-2.0
     url: 'https://www.apache.org/licenses/LICENSE-2.0.html'
 servers:
-- url: /api/v0
+  - url: /api/v0
 paths:
   /componentsusers:
-    $ref: 'componentsusers.paths.yaml'
+    get:
+      summary: List all components and possible users
+      operationId: listComponentUsers
+      security:
+        - XsrfToken: []
+      responses:
+        '200':
+          description: List of all the potential users and components with existing subscribers and owners.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentsUsersResponse'
   /components/{componentId}/users/{userId}:
-    $ref: 'component_componentid_users_userid.paths.yaml'
+    put:
+      summary: Add a user to a component
+      operationId: addUserToComponent
+      security:
+        - XsrfToken: []
+      parameters:
+        - in: path
+          name: componentId
+          schema:
+            type: integer
+          required: true
+          description: Component ID
+        - in: path
+          name: userId
+          schema:
+            type: integer
+          required: true
+          description: User ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComponentUsersRequest'
+      responses:
+        '200':
+          description: Success
+    delete:
+      summary: Remove a user from a component
+      operationId: removeUserFromComponent
+      security:
+        - XsrfToken: []
+      parameters:
+        - in: path
+          name: componentId
+          schema:
+            type: integer
+          required: true
+          description: Component ID
+        - in: path
+          name: userId
+          schema:
+            type: integer
+          required: true
+          description: User ID
+      responses:
+        '200':
+          description: Success
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComponentUsersRequest'
+  /review-latency:
+    get:
+      summary: List recently reviewed features and their review latency
+      operationId: listReviewsWithLatency
+      responses:
+        '200':
+          description: >-
+            List of recent reviews and their latency.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ReviewLatency'
+  /external_reviews/{review_group}:
+    get:
+      summary: List features whose external reviews are incomplete
+      operationId: listExternalReviews
+      parameters:
+        - in: path
+          name: review_group
+          required: true
+          schema:
+            type: string
+            enum:
+              - tag
+              - gecko
+              - webkit
+          description: >
+            Which review group to focus on:
+             * `tag` - The W3C TAG
+             * `gecko` - The rendering engine that powers Mozilla Firefox
+             * `webkit` - The rendering engine that powers Apple Safari
+      responses:
+        '200':
+          description: >-
+            List of all the outstanding reviews, ordered by urgency.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalReviewsResponse'
+        '404':
+          description: The review group wasn't recognized.
+  /spec_mentors:
+    get:
+      summary: List spec mentors and their activity
+      operationId: listSpecMentors
+      parameters:
+        - in: query
+          name: after
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: >-
+            List of all the matching spec mentors.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SpecMentor'
+        '400':
+          description: The ?after query parameter isn't a valid date in ISO YYYY-MM-DD format.
+  /feature-latency:
+    get:
+      summary: List how long each feature took to launch
+      operationId: listFeatureLatency
+      parameters:
+        - $ref: '#/components/parameters/startAtParam'
+        - $ref: '#/components/parameters/endAtParam'
+      responses:
+        '200':
+          description: >-
+            List the latency of features that launched in date range.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FeatureLatency'
+        '400':
+          description: One of the query parameters isn't a valid date in ISO YYYY-MM-DD format.
+components:
+  parameters:
+    startAtParam:
+      in: query
+      name: startAt
+      schema:
+        type: string
+        format: date
+      description: Start date (RFC 3339, section 5.6, for example, 2017-07-21). The date is inclusive.
+      required: true
+    endAtParam:
+      in: query
+      name: endAt
+      schema:
+        type: string
+        format: date
+      description: End date (RFC 3339, section 5.6, for example, 2017-07-21). The date is exclusive.
+      required: true
+  securitySchemes:
+    XsrfToken:
+      type: apiKey
+      in: header
+      name: X-Xsrf-Token
+  schemas:
+    ComponentsUsersResponse:
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComponentsUser'
+        components:
+          type: array
+          items:
+            $ref: '#/components/schemas/OwnersAndSubscribersOfComponent'
+    ComponentsUser:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+      required:
+        - id
+        - name
+        - email
+    OwnersAndSubscribersOfComponent:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        subscriber_ids:
+          type: array
+          items:
+            type: integer
+        owner_ids:
+          type: array
+          items:
+            type: integer
+      required:
+        - id
+        - name
+    ComponentUsersRequest:
+      description: Traits about the user in relation to the component
+      properties:
+        owner:
+          type: boolean
+          description: Impacts this user's ownership. For PUT, add ownership. For DELETE, remove ownership.
+    ReviewLatency:
+      type: object
+      properties:
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        gate_reviews:
+          type: array
+          items:
+            $ref: '#/components/schemas/GateLatency'
+      required:
+        - feature
+        - gate_reviews
+    GateLatency:
+      type: object
+      required:
+        - gate_type
+        - latency_days
+      properties:
+        gate_type:
+          type: integer
+        latency_days:
+          type: integer
+    SpecMentor:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        mentored_features:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeatureLink'
+      required:
+        - email
+        - mentored_features
+    FeatureLatency:
+      type: object
+      properties:
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        entry_created_date:
+          type: string
+          format: date
+        shipped_milestone:
+          type: integer
+        shipped_date:
+          type: string
+          format: date
+        owner_emails:
+          type: array
+          items:
+            type: string
+            format: email
+      required:
+        - feature
+        - entry_created_date
+        - shipped_milestone
+        - shipped_date
+        - owner_emails
+    ExternalReviewsResponse:
+      type: object
+      required:
+        - reviews
+        - link_previews
+      properties:
+        reviews:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutstandingReview'
+        link_previews:
+          type: array
+          items:
+            $ref: '#/components/schemas/LinkPreview'
+    OutstandingReview:
+      type: object
+      required:
+        - review_link
+        - feature
+        - current_stage
+      properties:
+        review_link:
+          type: string
+          format: url
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        current_stage:
+          type: string
+          enum:
+            - incubating
+            - prototyping
+            - dev-trial
+            - wide-review
+            - origin-trial
+            - shipping
+            - shipped
+          description: >
+            The development stage that the feature has reached:
+              - [`incubating`](https://www.chromium.org/blink/launching-features/#start-incubating)
+              - [`prototyping`](https://www.chromium.org/blink/launching-features/#prototyping)
+              - [`dev-trial`](https://www.chromium.org/blink/launching-features/#dev-trials)
+              - [`wide-review`](https://www.chromium.org/blink/launching-features/#widen-review)
+              - [`origin-trial`](https://www.chromium.org/blink/launching-features/#origin-trials)
+              - [`shipping`](https://www.chromium.org/blink/launching-features/#new-feature-prepare-to-ship)
+              - `shipped` - The feature is enabled by default in Chromium.
+        estimated_start_milestone:
+          type: integer
+        estimated_end_milestone:
+          type: integer
+    FeatureLink:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          example: 5703707724349440
+        name:
+          type: string
+          example: WebGPU
+    LinkPreviewBase:
+      type: object
+      required:
+        - url
+        - type
+        - information
+        - http_error_code
+      properties:
+        url:
+          type: string
+          format: url
+        type:
+          type: string
+        information:
+          type: object
+        http_error_code:
+          type: integer
+    LinkPreview:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewBase'
+        - discriminator:
+            propertyName: type
+            mapping:
+              github_issue: LinkPreviewGithubIssue
+              github_markdown: LinkPreviewGithubMarkdown
+              github_pull_request: LinkPreviewGithubPullRequest
+              mdn_docs: LinkPreviewMdnDocs
+              google_docs: LinkPreviewGoogleDocs
+              mozilla_bug: LinkPreviewMozillaBug
+              webkit_bug: LinkPreviewWebkitBug
+              specs: LinkPreviewSpecs
+    LinkPreviewGithubIssue:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewBase'
+        - type: object
+          required: [information]
+          properties:
+            information:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: url
+                number:
+                  type: integer
+                title:
+                  type: string
+                user_login:
+                  type: string
+                state:
+                  type: string
+                  enum:
+                    - open
+                    - closed
+                state_reason:
+                  type: string
+                  enum:
+                    - completed
+                    - reopened
+                    - not_planned
+                assignee_login:
+                  type: string
+                created_at:
+                  type: string
+                  format: date
+                updated_at:
+                  type: string
+                  format: date
+                closed_at:
+                  type: string
+                  format: date
+                labels:
+                  type: array
+                  items:
+                    type: string
+    LinkPreviewGithubPullRequest:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewGithubIssue'
+    LinkPreviewGithubMarkdown:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewBase'
+        - type: object
+          required: [information]
+          properties:
+            information:
+              type: object
+              properties:
+                _parsed_title:
+                  type: string
+                content:
+                  type: string
+    LinkPreviewOpenGraph:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewBase'
+        - type: object
+          required: [information]
+          properties:
+            information:
+              type: object
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+    LinkPreviewMdnDocs:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewGoogleDocs:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewMozillaBug:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewWebkitBug:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewSpecs:
+      allOf:
+        - $ref: '#/components/schemas/LinkPreviewOpenGraph'

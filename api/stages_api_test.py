@@ -47,12 +47,13 @@ class StagesAPITest(testing_config.CustomTestCase):
         id=10,
         feature_id=1,
         stage_type=150,
-        display_name='Stage display name',                 
+        display_name='Stage display name',
         ux_emails=['ux_person@example.com'],
         intent_thread_url='https://example.com/intent',
         milestones=MilestoneSet(desktop_first=100),
         experiment_goals='To be the very best.',
-        created=self.now)
+        created=self.now,
+        ot_setup_status=1)
     self.stage_1.put()
     # Shipping stage.
     self.stage_2 = Stage(id=11, feature_id=1, stage_type=160, created=self.now)
@@ -130,6 +131,7 @@ class StagesAPITest(testing_config.CustomTestCase):
         'ot_is_deprecation_trial': False,
         'ot_owner_email': None,
         'ot_require_approvals': False,
+        'ot_setup_status': 1,
         'ot_webfeature_use_counter': None,
         'experiment_extension_reason': None,
         'experiment_goals': 'To be the very best.',
@@ -323,7 +325,8 @@ class StagesAPITest(testing_config.CustomTestCase):
     with test_app.test_request_context(request_path, json=json):
       with self.assertRaises(werkzeug.exceptions.Forbidden):
         self.handler.do_post(feature_id=1)
-    mock_abort.assert_called_once_with(403)
+    mock_abort.assert_called_once_with(
+        403, description='User cannot edit feature 1')
 
   @mock.patch('framework.permissions.validate_feature_edit_permission')
   def test_post__Redirect(self, permission_call):
@@ -436,7 +439,8 @@ class StagesAPITest(testing_config.CustomTestCase):
         f'{self.request_path}1/stages/10', json=json):
       with self.assertRaises(werkzeug.exceptions.Forbidden):
         self.handler.do_patch(feature_id=1, stage_id=10)
-    mock_abort.assert_called_once_with(403)
+    mock_abort.assert_called_once_with(
+        403, description='User cannot edit feature 1')
 
   @mock.patch('flask.abort')
   def test_patch__bad_id(self, mock_abort):
@@ -522,6 +526,67 @@ class StagesAPITest(testing_config.CustomTestCase):
     self.assertIsNone(stage.display_name)
     # Existing fields not specified should not be changed.
     self.assertEqual(stage.experiment_goals, 'To be the very best.')
+
+  @mock.patch('internals.notifier_helpers.send_ot_notification')
+  def test_patch__ot_creation(self, mock_send_ot_notification):
+    """A valid PATCH request should update an existing stage."""
+    testing_config.sign_in('feature_owner@example.com', 123)
+    mock_send_ot_notification.return_value = None
+    json = {
+        'ot_action_requested': {
+          'form_field_name': 'ot_action_requested',
+          'value': True,
+        },
+        'ot_chromium_trial_name': {
+          'form_field_name': 'ot_chromium_trial_name',
+          'value': 'Some name',
+        },
+      }
+
+    with test_app.test_request_context(
+        f'{self.request_path}1/stages/10', json=json):
+      actual = self.handler.do_patch(feature_id=1, stage_id=10)
+    self.assertEqual(actual['message'], 'Stage values updated.')
+    stage = self.stage_1
+    self.assertEqual(stage.ot_chromium_trial_name, 'Some name')
+    # Values can be set to null.
+    self.assertTrue(stage.ot_action_requested)
+    # Existing fields not specified should not be changed.
+    self.assertEqual(stage.experiment_goals, 'To be the very best.')
+    # OT creation request notification should be sent.
+    mock_send_ot_notification.assert_called_once()
+
+  @mock.patch('internals.notifier_helpers.send_ot_notification')
+  def test_patch__ot_extension(self, mock_send_ot_notification):
+    """A valid PATCH request should update an existing stage."""
+    testing_config.sign_in('feature_owner@example.com', 123)
+    # extension stage type.
+    self.stage_1.stage_type = 151
+    self.stage_1.put()
+    mock_send_ot_notification.return_value = None
+    json = {
+        'ot_action_requested': {
+          'form_field_name': 'ot_action_requested',
+          'value': True,
+        },
+        'ot_chromium_trial_name': {
+          'form_field_name': 'ot_extension_reason',
+          'value': 'reason',
+        },
+      }
+
+    with test_app.test_request_context(
+        f'{self.request_path}1/stages/10', json=json):
+      actual = self.handler.do_patch(feature_id=1, stage_id=10)
+    self.assertEqual(actual['message'], 'Stage values updated.')
+    stage = self.stage_1
+    self.assertEqual(stage.ot_chromium_trial_name, 'reason')
+    # Values can be set to null.
+    self.assertTrue(stage.ot_action_requested)
+    # Existing fields not specified should not be changed.
+    self.assertEqual(stage.experiment_goals, 'To be the very best.')
+    # OT extension request should NOT send a notification.
+    mock_send_ot_notification.assert_not_called()
 
   def test_patch__ot_request_googler(self):
     """A valid OT creation request from a googler should update stage."""
@@ -612,7 +677,8 @@ class StagesAPITest(testing_config.CustomTestCase):
     with test_app.test_request_context(f'{self.request_path}1/stages/10'):
       with self.assertRaises(werkzeug.exceptions.Forbidden):
         self.handler.do_delete(stage_id=10)
-    mock_abort.assert_called_once_with(403)
+    mock_abort.assert_called_once_with(
+        403, description='User cannot edit feature 1')
 
   @mock.patch('flask.abort')
   def test_delete__no_id(self, mock_abort):

@@ -17,7 +17,7 @@ from datetime import datetime
 import logging
 from typing import Any, Optional
 from google.cloud import ndb
-import requests  # type: ignore
+import flask
 
 # Appengine imports.
 from framework import rediscache
@@ -61,13 +61,13 @@ class FeatureCreateHandler(basehandlers.FlaskHandler):
 
     feature_type = int(self.form.get('feature_type', 0))
 
-    breaking_change = self.form.get('breaking_change') == 'on'
+    has_enterprise_impact = int(self.form.get('enterprise_impact', '1')) > ENTERPRISE_IMPACT_NONE
     enterprise_notification_milestone = self.form.get('first_enterprise_notification_milestone')
     if enterprise_notification_milestone:
       enterprise_notification_milestone = int(enterprise_notification_milestone)
-    if breaking_change and needs_default_first_notification_milestone(new_fields={
+    if has_enterprise_impact and needs_default_first_notification_milestone(new_fields={
       'feature_type': feature_type,
-      'breaking_change': breaking_change,
+      'enterprise_impact': int(self.form.get('enterprise_impact')),
       'first_enterprise_notification_milestone': enterprise_notification_milestone
       }):
       enterprise_notification_milestone = get_default_first_notice_milestone_for_feature()
@@ -86,7 +86,7 @@ class FeatureCreateHandler(basehandlers.FlaskHandler):
         updater_email=self.get_current_user().email(),
         accurate_as_of=datetime.now(),
         unlisted=self.form.get('unlisted') == 'on',
-        breaking_change=breaking_change,
+        enterprise_impact=int(self.form.get('enterprise_impact', '1')),
         first_enterprise_notification_milestone=enterprise_notification_milestone,
         blink_components=blink_components,
         tag_review_status=processes.initial_tag_review_status(feature_type))
@@ -257,6 +257,7 @@ class FeatureEditHandler(basehandlers.FlaskHandler):
       ('comments', 'str'),
       ('feature_notes', 'str'),
       ('breaking_change', 'bool'),
+      ('enterprise_impact', 'int'),
       ('ongoing_constraints', 'str')]
 
   # Old field name, new field name
@@ -352,7 +353,7 @@ class FeatureEditHandler(basehandlers.FlaskHandler):
       'privacy_review_status', 'tag_review_status', 'safari_views', 'ff_views',
       'web_dev_views', 'blink_components', 'impl_status_chrome'])
 
-  MULTI_SELECT_FIELDS: frozenset[str] = frozenset(['rollout_platforms', 'enterprise_feature_categories'])
+  MULTI_SELECT_FIELDS: frozenset[str] = frozenset(['rollout_platforms', 'enterprise_feature_categories', 'enterprise_impact'])
 
   def touched(self, param_name: str, form_fields: list[str]) -> bool:
     """Return True if the user edited the specified field."""
@@ -413,7 +414,7 @@ class FeatureEditHandler(basehandlers.FlaskHandler):
   # TODO(danielrsmith): This method's logic is way too complicated to easily
   # maintain. This needs to be scrapped and submission of edits should be
   # handled using features_api and stages_api.
-  def process_post_data(self, **kwargs) -> requests.Response:
+  def process_post_data(self, **kwargs) -> flask.Response | dict:
     feature_id = kwargs.get('feature_id', None)
     stage_id = kwargs.get('stage_id', None)
     # Validate the user has edit permissions and redirect if needed.
@@ -445,17 +446,17 @@ class FeatureEditHandler(basehandlers.FlaskHandler):
         new_field = self.RENAMED_FIELD_MAPPING.get(field, field)
         self._add_changed_field(fe, new_field, field_val, changed_fields)
         setattr(fe, new_field, field_val)
-    
-    breaking_change = self._get_field_val('breaking_change', 'bool')
+
+    enterprise_impact = self._get_field_val('enterprise_impact', 'int')
     if self.touched('first_enterprise_notification_milestone', form_fields):
       milestone = self._get_field_val('first_enterprise_notification_milestone', 'int')
       if is_update_first_notification_milestone(fe, {
         'first_enterprise_notification_milestone': milestone,
-        'breaking_change': breaking_change}):
+        'enterprise_impact': enterprise_impact}):
         self._add_changed_field(
           fe, 'first_enterprise_notification_milestone', milestone, changed_fields)
         setattr(fe, 'first_enterprise_notification_milestone', milestone)
-    if should_remove_first_notice_milestone(fe, {'breaking_change': breaking_change}):
+    if should_remove_first_notice_milestone(fe, {'enterprise_impact': enterprise_impact}):
       self._add_changed_field(
         fe, 'first_enterprise_notification_milestone', milestone, changed_fields)
       setattr(fe, 'first_enterprise_notification_milestone', None)

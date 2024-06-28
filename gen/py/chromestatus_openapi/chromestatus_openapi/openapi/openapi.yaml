@@ -18,17 +18,21 @@ paths:
       operationId: remove_user_from_component
       parameters:
       - description: Component ID
+        explode: false
         in: path
         name: componentId
         required: true
         schema:
           type: integer
+        style: simple
       - description: User ID
+        explode: false
         in: path
         name: userId
         required: true
         schema:
           type: integer
+        style: simple
       requestBody:
         content:
           application/json:
@@ -37,23 +41,29 @@ paths:
       responses:
         "200":
           description: Success
+      security:
+      - XsrfToken: []
       summary: Remove a user from a component
       x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
     put:
       operationId: add_user_to_component
       parameters:
       - description: Component ID
+        explode: false
         in: path
         name: componentId
         required: true
         schema:
           type: integer
+        style: simple
       - description: User ID
+        explode: false
         in: path
         name: userId
         required: true
         schema:
           type: integer
+        style: simple
       requestBody:
         content:
           application/json:
@@ -62,6 +72,8 @@ paths:
       responses:
         "200":
           description: Success
+      security:
+      - XsrfToken: []
       summary: Add a user to a component
       x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
   /componentsusers:
@@ -75,9 +87,143 @@ paths:
                 $ref: '#/components/schemas/ComponentsUsersResponse'
           description: List of all the potential users and components with existing
             subscribers and owners.
+      security:
+      - XsrfToken: []
       summary: List all components and possible users
       x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /external_reviews/{review_group}:
+    get:
+      operationId: list_external_reviews
+      parameters:
+      - description: |
+          Which review group to focus on:
+           * `tag` - The W3C TAG
+           * `gecko` - The rendering engine that powers Mozilla Firefox
+           * `webkit` - The rendering engine that powers Apple Safari
+        explode: false
+        in: path
+        name: review_group
+        required: true
+        schema:
+          enum:
+          - tag
+          - gecko
+          - webkit
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalReviewsResponse'
+          description: "List of all the outstanding reviews, ordered by urgency."
+        "404":
+          description: The review group wasn't recognized.
+      summary: List features whose external reviews are incomplete
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /feature-latency:
+    get:
+      operationId: list_feature_latency
+      parameters:
+      - description: "Start date (RFC 3339, section 5.6, for example, 2017-07-21).\
+          \ The date is inclusive."
+        explode: true
+        in: query
+        name: startAt
+        required: true
+        schema:
+          format: date
+          type: string
+        style: form
+      - description: "End date (RFC 3339, section 5.6, for example, 2017-07-21). The\
+          \ date is exclusive."
+        explode: true
+        in: query
+        name: endAt
+        required: true
+        schema:
+          format: date
+          type: string
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/FeatureLatency'
+                type: array
+          description: List the latency of features that launched in date range.
+        "400":
+          description: One of the query parameters isn't a valid date in ISO YYYY-MM-DD
+            format.
+      summary: List how long each feature took to launch
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /review-latency:
+    get:
+      operationId: list_reviews_with_latency
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ReviewLatency'
+                type: array
+          description: List of recent reviews and their latency.
+      summary: List recently reviewed features and their review latency
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /spec_mentors:
+    get:
+      operationId: list_spec_mentors
+      parameters:
+      - explode: true
+        in: query
+        name: after
+        required: false
+        schema:
+          format: date
+          type: string
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/SpecMentor'
+                type: array
+          description: List of all the matching spec mentors.
+        "400":
+          description: The ?after query parameter isn't a valid date in ISO YYYY-MM-DD
+            format.
+      summary: List spec mentors and their activity
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
 components:
+  parameters:
+    startAtParam:
+      description: "Start date (RFC 3339, section 5.6, for example, 2017-07-21). The\
+        \ date is inclusive."
+      explode: true
+      in: query
+      name: startAt
+      required: true
+      schema:
+        format: date
+        type: string
+      style: form
+    endAtParam:
+      description: "End date (RFC 3339, section 5.6, for example, 2017-07-21). The\
+        \ date is exclusive."
+      explode: true
+      in: query
+      name: endAt
+      required: true
+      schema:
+        format: date
+        type: string
+      style: form
   schemas:
     ComponentsUsersResponse:
       example:
@@ -181,3 +327,377 @@ components:
           title: owner
           type: boolean
       title: ComponentUsersRequest
+    ReviewLatency:
+      example:
+        gate_reviews:
+        - gate_type: 0
+          latency_days: 6
+        - gate_type: 0
+          latency_days: 6
+        feature:
+          name: WebGPU
+          id: 5703707724349440
+      properties:
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        gate_reviews:
+          items:
+            $ref: '#/components/schemas/GateLatency'
+          title: gate_reviews
+          type: array
+      required:
+      - feature
+      - gate_reviews
+      title: ReviewLatency
+      type: object
+    GateLatency:
+      example:
+        gate_type: 0
+        latency_days: 6
+      properties:
+        gate_type:
+          title: gate_type
+          type: integer
+        latency_days:
+          title: latency_days
+          type: integer
+      required:
+      - gate_type
+      - latency_days
+      title: GateLatency
+      type: object
+    SpecMentor:
+      example:
+        mentored_features:
+        - name: WebGPU
+          id: 5703707724349440
+        - name: WebGPU
+          id: 5703707724349440
+        email: email
+      properties:
+        email:
+          format: email
+          title: email
+          type: string
+        mentored_features:
+          items:
+            $ref: '#/components/schemas/FeatureLink'
+          title: mentored_features
+          type: array
+      required:
+      - email
+      - mentored_features
+      title: SpecMentor
+      type: object
+    FeatureLatency:
+      example:
+        owner_emails:
+        - owner_emails
+        - owner_emails
+        feature:
+          name: WebGPU
+          id: 5703707724349440
+        shipped_date: 2000-01-23
+        entry_created_date: 2000-01-23
+        shipped_milestone: 0
+      properties:
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        entry_created_date:
+          format: date
+          title: entry_created_date
+          type: string
+        shipped_milestone:
+          title: shipped_milestone
+          type: integer
+        shipped_date:
+          format: date
+          title: shipped_date
+          type: string
+        owner_emails:
+          items:
+            format: email
+            type: string
+          title: owner_emails
+          type: array
+      required:
+      - entry_created_date
+      - feature
+      - owner_emails
+      - shipped_date
+      - shipped_milestone
+      title: FeatureLatency
+      type: object
+    ExternalReviewsResponse:
+      example:
+        link_previews:
+        - information: "{}"
+          type: type
+          http_error_code: 1
+          url: http://example.com/aeiou
+        - information: "{}"
+          type: type
+          http_error_code: 1
+          url: http://example.com/aeiou
+        reviews:
+        - feature:
+            name: WebGPU
+            id: 5703707724349440
+          estimated_end_milestone: 6
+          review_link: http://example.com/aeiou
+          current_stage: incubating
+          estimated_start_milestone: 0
+        - feature:
+            name: WebGPU
+            id: 5703707724349440
+          estimated_end_milestone: 6
+          review_link: http://example.com/aeiou
+          current_stage: incubating
+          estimated_start_milestone: 0
+      properties:
+        reviews:
+          items:
+            $ref: '#/components/schemas/OutstandingReview'
+          title: reviews
+          type: array
+        link_previews:
+          items:
+            $ref: '#/components/schemas/LinkPreview'
+          title: link_previews
+          type: array
+      required:
+      - link_previews
+      - reviews
+      title: ExternalReviewsResponse
+      type: object
+    OutstandingReview:
+      example:
+        feature:
+          name: WebGPU
+          id: 5703707724349440
+        estimated_end_milestone: 6
+        review_link: http://example.com/aeiou
+        current_stage: incubating
+        estimated_start_milestone: 0
+      properties:
+        review_link:
+          format: url
+          title: review_link
+          type: string
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        current_stage:
+          description: |
+            The development stage that the feature has reached:
+              - [`incubating`](https://www.chromium.org/blink/launching-features/#start-incubating)
+              - [`prototyping`](https://www.chromium.org/blink/launching-features/#prototyping)
+              - [`dev-trial`](https://www.chromium.org/blink/launching-features/#dev-trials)
+              - [`wide-review`](https://www.chromium.org/blink/launching-features/#widen-review)
+              - [`origin-trial`](https://www.chromium.org/blink/launching-features/#origin-trials)
+              - [`shipping`](https://www.chromium.org/blink/launching-features/#new-feature-prepare-to-ship)
+              - `shipped` - The feature is enabled by default in Chromium.
+          enum:
+          - incubating
+          - prototyping
+          - dev-trial
+          - wide-review
+          - origin-trial
+          - shipping
+          - shipped
+          title: current_stage
+          type: string
+        estimated_start_milestone:
+          title: estimated_start_milestone
+          type: integer
+        estimated_end_milestone:
+          title: estimated_end_milestone
+          type: integer
+      required:
+      - current_stage
+      - feature
+      - review_link
+      title: OutstandingReview
+      type: object
+    FeatureLink:
+      example:
+        name: WebGPU
+        id: 5703707724349440
+      properties:
+        id:
+          example: 5703707724349440
+          title: id
+          type: integer
+        name:
+          example: WebGPU
+          title: name
+          type: string
+      required:
+      - id
+      - name
+      title: FeatureLink
+      type: object
+    LinkPreviewBase:
+      properties:
+        url:
+          format: url
+          title: url
+          type: string
+        type:
+          title: type
+          type: string
+        information:
+          title: information
+          type: object
+        http_error_code:
+          title: http_error_code
+          type: integer
+      required:
+      - http_error_code
+      - information
+      - type
+      - url
+      title: LinkPreviewBase
+      type: object
+    LinkPreview:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - discriminator:
+          mapping:
+            github_issue: LinkPreviewGithubIssue
+            github_markdown: LinkPreviewGithubMarkdown
+            github_pull_request: LinkPreviewGithubPullRequest
+            mdn_docs: LinkPreviewMdnDocs
+            google_docs: LinkPreviewGoogleDocs
+            mozilla_bug: LinkPreviewMozillaBug
+            webkit_bug: LinkPreviewWebkitBug
+            specs: LinkPreviewSpecs
+          propertyName: type
+      example:
+        information: "{}"
+        type: type
+        http_error_code: 1
+        url: http://example.com/aeiou
+      title: LinkPreview
+    LinkPreviewGithubIssue:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - properties:
+          information:
+            $ref: '#/components/schemas/LinkPreviewGithubIssue_allOf_information'
+        required:
+        - information
+        type: object
+      title: LinkPreviewGithubIssue
+    LinkPreviewGithubPullRequest:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewGithubIssue'
+    LinkPreviewGithubMarkdown:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - properties:
+          information:
+            $ref: '#/components/schemas/LinkPreviewGithubMarkdown_allOf_information'
+        required:
+        - information
+        type: object
+    LinkPreviewOpenGraph:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - properties:
+          information:
+            $ref: '#/components/schemas/LinkPreviewOpenGraph_allOf_information'
+        required:
+        - information
+        type: object
+      title: LinkPreviewOpenGraph
+    LinkPreviewMdnDocs:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewGoogleDocs:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewMozillaBug:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewWebkitBug:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewSpecs:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewGithubIssue_allOf_information:
+      properties:
+        url:
+          format: url
+          title: url
+          type: string
+        number:
+          title: number
+          type: integer
+        title:
+          title: title
+          type: string
+        user_login:
+          title: user_login
+          type: string
+        state:
+          enum:
+          - open
+          - closed
+          title: state
+          type: string
+        state_reason:
+          enum:
+          - completed
+          - reopened
+          - not_planned
+          title: state_reason
+          type: string
+        assignee_login:
+          title: assignee_login
+          type: string
+        created_at:
+          format: date
+          title: created_at
+          type: string
+        updated_at:
+          format: date
+          title: updated_at
+          type: string
+        closed_at:
+          format: date
+          title: closed_at
+          type: string
+        labels:
+          items:
+            type: string
+          title: labels
+          type: array
+      title: LinkPreviewGithubIssue_allOf_information
+      type: object
+    LinkPreviewGithubMarkdown_allOf_information:
+      properties:
+        _parsed_title:
+          title: _parsed_title
+          type: string
+        content:
+          title: content
+          type: string
+      title: LinkPreviewGithubMarkdown_allOf_information
+      type: object
+    LinkPreviewOpenGraph_allOf_information:
+      properties:
+        title:
+          title: title
+          type: string
+        description:
+          title: description
+          type: string
+      title: LinkPreviewOpenGraph_allOf_information
+      type: object
+  securitySchemes:
+    XsrfToken:
+      in: header
+      name: X-Xsrf-Token
+      type: apiKey
+      x-apikeyInfoFunc: chromestatus_openapi.controllers.security_controller.info_from_XsrfToken

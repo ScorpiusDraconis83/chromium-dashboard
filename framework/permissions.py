@@ -17,6 +17,7 @@
 import logging
 from typing import Optional
 import flask
+from google.cloud import ndb  # type: ignore
 
 import settings
 from framework.users import User
@@ -61,9 +62,8 @@ def can_create_feature(user: User) -> bool:
   if user.email().endswith(('@chromium.org', '@google.com')):
     return True
 
-  query = AppUser.query(AppUser.email == user.email())
-  found_user = query.get(keys_only=True)
-  if found_user is not None:
+  app_user = AppUser.get_app_user(user.email())
+  if app_user:
     return True
 
   return False
@@ -97,10 +97,10 @@ def feature_edit_list(user: User) -> list[int]:
     return []
 
   # Query features to find which can be edited.
-  features_editable = feature_helpers.get_all(
-    filterby=('can_edit', user.email()))
+  editable_feature_keys: list[ndb.Key] = feature_helpers.get_all(
+      filterby=('can_edit', user.email()), keys_only=True)
   # Return a list of unique ids of features that can be edited.
-  return list(set([f['id'] for f in features_editable]))
+  return list(set([fk.integer_id() for fk in editable_feature_keys]))
 
 
 def can_edit_feature(user: User, feature_id: int) -> bool:
@@ -141,7 +141,8 @@ def can_review_gate(
   return is_approver or is_assigned
 
 
-def _maybe_redirect_to_login(handler_obj):
+def _maybe_redirect_to_login(handler_obj) -> flask.Response | dict:
+  # TODO(jrobbins): For API calls, we should return 401 rather than a redirect.
   common_data = handler_obj.get_common_data()
   if 'current_path' in common_data and 'loginStatus=False' in common_data['current_path']:
     return {}
@@ -207,7 +208,8 @@ def validate_feature_create_permission(handler_obj):
     handler_obj.abort(403)
 
 
-def validate_feature_edit_permission(handler_obj, feature_id: int):
+def validate_feature_edit_permission(
+    handler_obj, feature_id: int) -> flask.Response | dict:
   """Check if user has permission to edit feature and abort if not."""
   user = handler_obj.get_current_user()
   req = handler_obj.request
@@ -223,4 +225,6 @@ def validate_feature_edit_permission(handler_obj, feature_id: int):
 
   # Redirect to 403 if user does not have edit permission for feature.
   if not can_edit_feature(user, feature_id):
-    handler_obj.abort(403)
+    handler_obj.abort(403, msg='User cannot edit feature %r' % feature_id)
+
+  return {}

@@ -716,7 +716,7 @@ class FeaturesAPITest(testing_config.CustomTestCase):
       'feature_changes': {
         'id': self.feature_1_id,
         'first_enterprise_notification_milestone': 100,  # str
-        'breaking_change': True
+        'enterprise_impact': core_enums.ENTERPRISE_IMPACT_LOW
       },
       'stages': [],
     }
@@ -738,7 +738,7 @@ class FeaturesAPITest(testing_config.CustomTestCase):
     stable_date = _datetime_to_str(datetime.now().replace(year=datetime.now().year + 1, day=1))
     mock_call.return_value = { 100: { 'version': 100, 'stable_date': stable_date } }
     
-    self.feature_1.breaking_change = True
+    self.feature_1.enterprise_impact = core_enums.ENTERPRISE_IMPACT_MEDIUM
     self.feature_1.first_enterprise_notification_milestone = 100
     self.feature_1.put()
   
@@ -748,7 +748,7 @@ class FeaturesAPITest(testing_config.CustomTestCase):
     valid_request_body = {
       'feature_changes': {
         'id': self.feature_1_id,
-        'breaking_change': False
+        'enterprise_impact': core_enums.ENTERPRISE_IMPACT_NONE
       },
       'stages': [],
     }
@@ -770,7 +770,7 @@ class FeaturesAPITest(testing_config.CustomTestCase):
     stable_date = _datetime_to_str(datetime.now().replace(year=datetime.now().year - 1, day=1))
     mock_call.return_value = { 100: { 'version': 100, 'stable_date': stable_date } }
     
-    self.feature_1.breaking_change = True
+    self.feature_1.enterprise_impact = core_enums.ENTERPRISE_IMPACT_MEDIUM
     self.feature_1.first_enterprise_notification_milestone = 100
     self.feature_1.put()
   
@@ -780,7 +780,7 @@ class FeaturesAPITest(testing_config.CustomTestCase):
     valid_request_body = {
       'feature_changes': {
         'id': self.feature_1_id,
-        'breaking_change': False
+        'enterprise_impact': core_enums.ENTERPRISE_IMPACT_NONE
       },
       'stages': [],
     }
@@ -796,11 +796,14 @@ class FeaturesAPITest(testing_config.CustomTestCase):
     self.assertIsNotNone(self.feature_1.updated)
     self.assertEqual(self.feature_1.updater_email, 'admin@example.com')
 
+
+  @mock.patch('api.channels_api.construct_chrome_channels_details')
   @mock.patch('api.channels_api.construct_specified_milestones_details')
-  def test_patch__enterprise_first_notice_in_the_past(self, mock_call):
+  def test_patch__enterprise_first_notice_in_the_past(self, specified_mock, chrome_mock):
     """PATCH request successful with newer default first_enterprise_notification_milestone."""
     stable_date = _datetime_to_str(datetime.now().replace(year=datetime.now().year - 2, day=1))
-    mock_call.return_value = { 100: { 'version': 100, 'stable_date': stable_date } }
+    specified_mock.return_value = { 100: { 'version': 100, 'stable_date': stable_date } }
+    chrome_mock.return_value = { 'beta': { 'version': 420 } }
 
     # Signed-in user with permissions.
     testing_config.sign_in('admin@example.com', 123567890)
@@ -821,10 +824,10 @@ class FeaturesAPITest(testing_config.CustomTestCase):
     # Success response should be returned.
     self.assertEqual({'message': f'Feature {self.feature_1_id} updated.'}, response)
     # Assert that changes were made.
-    self.assertEqual(getattr(self.feature_1, 'first_enterprise_notification_milestone'), None)
+    self.assertEqual(getattr(self.feature_1, 'first_enterprise_notification_milestone'), 420)
     # Updater email field should be changed.
     self.assertIsNotNone(self.feature_1.updated)
-    self.assertIsNone(self.feature_1.updater_email)
+    self.assertEqual(self.feature_1.updater_email, 'admin@example.com')
 
 
   @mock.patch('api.channels_api.construct_specified_milestones_details')
@@ -1150,7 +1153,7 @@ class FeaturesAPITest(testing_config.CustomTestCase):
 
 
   @mock.patch('api.channels_api.construct_chrome_channels_details')
-  def test_post__first_enterprise_notification_milestone_missing_breaking_change(self, mock_call):
+  def test_post__first_enterprise_notification_milestone_missing_impact_enterprise(self, mock_call):
     """POST request successful with default first_enterprise_notification_milestone."""
 
     expected =  {
@@ -1172,7 +1175,7 @@ class FeaturesAPITest(testing_config.CustomTestCase):
       'ff_views': 1,
       'safari_views': 1,
       'web_dev_views': 1,
-      'breaking_change': True,
+      'enterprise_impact': core_enums.ENTERPRISE_IMPACT_LOW,
       'wpt': True,
     }
 
@@ -1215,7 +1218,7 @@ class FeaturesAPITest(testing_config.CustomTestCase):
       'owner_emails': 'user@example.com,user2@example.com',
       'category': 2,
       'feature_type': 4,
-      'breaking_change': True,
+      'enterprise_impact': core_enums.ENTERPRISE_IMPACT_HIGH,
       'impl_status_chrome': 3,
       'standard_maturity': 2,
       'ff_views': 1,
