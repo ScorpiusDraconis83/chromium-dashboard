@@ -1,0 +1,69 @@
+# Copyright 2024 Google Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License")
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""API endpoints for retrieving spec mentors and their associated mentored features."""
+
+from datetime import datetime
+
+from chromestatus_openapi.models.feature_link import FeatureLink
+from chromestatus_openapi.models.spec_mentor import SpecMentor
+
+from framework import basehandlers
+from internals.core_models import FeatureEntry
+
+
+class SpecMentorsAPI(basehandlers.APIHandler):
+    """Implements the OpenAPI /spec_mentors path."""
+
+    def do_get(self, **kwargs):
+        """Get a list of matching spec mentors.
+
+        Returns:
+          A list of data on all public origin trials.
+        """
+        after_param: str | None = self.request.args.get('after', None)
+        after: datetime | None = None
+        if after_param is not None:
+            try:
+                after = datetime.fromisoformat(after_param)
+            except ValueError:
+                self.abort(400, f'invalid ?after parameter {after_param}')
+
+        # Every non-empty string is greater than '', so this will find all entries with any spec mentors  # noqa: E501
+        # set. (!= is interpreted as "less or greater".)
+        # We can't have NDB sort the results because it can only sort by the inequality condition.  # noqa: E501
+        query = FeatureEntry.query(FeatureEntry.spec_mentor_emails > '')
+        features: list[FeatureEntry] = query.fetch()
+        if after is not None:
+            # Do this in Python rather than the NDB query because NDB queries only support one inequality.  # noqa: E501
+            features = [fe for fe in features if fe.updated > after]
+        features.sort(key=lambda fe: fe.updated, reverse=True)
+
+        mentors: dict[str, list[FeatureLink]] = {}
+        for fe in features:
+            if fe.unlisted:
+                # TODO: Consider showing these when the caller is logged in and has the right to see them.  # noqa: E501
+                continue
+            if fe.confidential or fe.deleted:
+                # WP features cannot be confidential, but skip them just in case.
+                continue
+            for mentor in fe.spec_mentor_emails:
+                mentors.setdefault(mentor, []).append(
+                    FeatureLink(id=fe.key.integer_id(), name=fe.name)
+                )  # noqa: E501
+
+        return [
+            SpecMentor(email, features).to_dict()
+            for email, features in sorted(mentors.items())
+        ]

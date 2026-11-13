@@ -13,57 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-import logging
-
-import settings
-from framework import basehandlers
-from framework import permissions
-from framework import utils
-from internals import core_enums
-from internals import feature_helpers
 
 # from google.appengine.api import users
-from framework import users
+"""Provides the JSON feed handler for the features list page."""
+
+from framework import basehandlers, permissions, users
+from internals import feature_helpers
 
 
 class FeaturesJsonHandler(basehandlers.FlaskHandler):
+    """Handler for returning features list in JSON format."""
 
-  HTTP_CACHE_TYPE = 'private'
-  JSONIFY = True
+    HTTP_CACHE_TYPE = 'private'
+    JSONIFY = True
 
-  def get_template_data(self, **kwargs):
-    user = users.get_current_user()
-    feature_list = feature_helpers.get_features_by_impl_status(
-        show_unlisted=permissions.can_edit_any_feature(user))
-    return feature_list
-
-
-class FeatureListHandler(basehandlers.FlaskHandler):
-
-  TEMPLATE_PATH = 'features.html'
-
-  def get_template_data(self, **kwargs):
-    # Note: feature_id is not used here but JS gets it from the URL.
-
-    # This template data is all for filtering.  The actual features
-    # are sent by an XHR request for /features.json.
-
-    template_data = {}
-    template_data['categories'] = [
-      (v, utils.normalized_name(v)) for k,v in
-      list(core_enums.FEATURE_CATEGORIES.items())]
-    template_data['IMPLEMENTATION_STATUSES'] = json.dumps([
-      {'key': k, 'val': v} for k,v in
-      list(core_enums.IMPLEMENTATION_STATUS.items())])
-    template_data['VENDOR_VIEWS'] = json.dumps([
-      {'key': k, 'val': v} for k,v in
-      sorted(core_enums.VENDOR_VIEWS.items())])
-    template_data['WEB_DEV_VIEWS'] = json.dumps([
-      {'key': k, 'val': v} for k,v in
-      list(core_enums.WEB_DEV_VIEWS.items())])
-    template_data['STANDARDS_VALS'] = json.dumps([
-      {'key': k, 'val': v} for k,v in
-      list(core_enums.STANDARDIZATION.items())])
-
-    return template_data
+    def get_template_data(self, **kwargs):
+        """Returns feature data in JSON format."""
+        user = users.get_current_user()
+        feature_list = feature_helpers.get_features_by_impl_status(
+            show_unlisted=permissions.can_edit_any_feature(user)
+        )
+        return feature_list

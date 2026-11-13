@@ -1,0 +1,358 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import {LitElement, css, html, nothing} from 'lit';
+import {ref} from 'lit/directives/ref.js';
+import './chromedash-form-table.js';
+import './chromedash-form-field.js';
+import {type ChromedashFormField} from './chromedash-form-field.js';
+import {
+  NEW_FEATURE_FORM_FIELDS,
+  ENTERPRISE_NEW_FEATURE_FORM_FIELDS,
+} from './form-definition.js';
+import {FEATURE_TYPES, ENTERPRISE_IMPACT} from './form-field-enums.js';
+
+import {ALL_FIELDS} from './form-field-specs.js';
+import {SHARED_STYLES} from '../css/shared-css.js';
+import {FORM_STYLES} from '../css/forms-css.js';
+import {
+  setupScrollToHash,
+  formatFeatureChanges,
+  getDisabledHelpText,
+  showToastMessage,
+  FieldInfo,
+  navigate,
+} from './utils.js';
+import {customElement, property, state} from 'lit/decorators.js';
+import {Feature} from '../js-src/cs-client.js';
+
+@customElement('chromedash-guide-new-page')
+export class ChromedashGuideNewPage extends LitElement {
+  static get styles() {
+    return [
+      ...SHARED_STYLES,
+      ...FORM_STYLES,
+      // The following style is a workaround to better support radio buttons
+      // without sl-radio which does not yet do validation.
+      // We do depend on sl-focus-ring being defined.
+      css`
+        table td label input[type='radio']:focus {
+          box-shadow: 0 0 0 var(--sl-focus-ring-width)
+            var(--sl-input-focus-ring-color);
+        }
+        .process-notice {
+          margin: var(--content-padding-half) 0;
+          padding: var(--content-padding-half);
+          background: var(--light-accent-color);
+          border-radius: 8px;
+        }
+        .process-notice p + p {
+          margin-top: var(--content-padding-half);
+        }
+      `,
+    ];
+  }
+
+  @property({attribute: false})
+  userEmail = '';
+  @property({type: Boolean})
+  isEnterpriseFeature = false;
+  @property({type: Number})
+  featureId!: number;
+  @property({type: Object})
+  feature!: Feature;
+  @state()
+  fieldValues: FieldInfo[] & {feature?: Feature} = [];
+  @property({type: Boolean})
+  submitting = false;
+
+  /* Add the form's event listener after Shoelace event listeners are attached
+   * see more at https://github.com/GoogleChrome/chromium-dashboard/issues/2014 */
+  async registerHandlers(el) {
+    if (!el) return;
+
+    await el.updateComplete;
+    const hiddenTokenField = this.renderRoot.querySelector(
+      'input[name=token]'
+    ) as HTMLInputElement;
+    hiddenTokenField.form?.addEventListener('submit', event => {
+      this.handleFormSubmit(event, hiddenTokenField);
+    });
+
+    this.maybeMakeWebFeatureRequired();
+    this.maybeMakeEnterpriseFeatureCategoriesRequired();
+    setupScrollToHash(this);
+  }
+
+  handleFormSubmit(event, hiddenTokenField) {
+    event.preventDefault();
+    let featureType: number | string =
+      FEATURE_TYPES.FEATURE_TYPE_INCUBATE_ID[0];
+    if (this.isEnterpriseFeature) {
+      featureType = FEATURE_TYPES.FEATURE_TYPE_ENTERPRISE_ID[0];
+    } else {
+      const selectedRadio = this.shadowRoot?.querySelector<HTMLInputElement>(
+        'input[name="feature_type"]:checked'
+      );
+      if (selectedRadio) {
+        featureType = Number(selectedRadio.value);
+      }
+      for (const fv of this.fieldValues) {
+        if (fv.name == 'feature_type' && fv.value !== undefined) {
+          featureType = fv.value;
+          break;
+        }
+      }
+    }
+    if (featureType == FEATURE_TYPES.FEATURE_TYPE_CODE_CHANGE_ID[0]) {
+      this.fieldValues = this.fieldValues.filter(
+        fv => fv.name !== 'web_feature'
+      );
+    }
+    const changesBody = formatFeatureChanges(this.fieldValues, this.featureId);
+    const createBody = changesBody.feature_changes;
+    createBody.feature_type = featureType;
+    this.submitting = true;
+    window.csClient
+      .createFeature(createBody)
+      .then(resp => {
+        this.navigate(
+          this.isEnterpriseFeature
+            ? `/guide/editall/${resp.feature_id}#id_rollout_milestone`
+            : `/feature/${resp.feature_id}`
+        );
+      })
+      .catch(() => {
+        this.submitting = false;
+        showToastMessage(
+          'Some errors occurred. Please refresh the page or try again later.'
+        );
+      });
+  }
+
+  // Local wrapper method is needed to allow sinon to stub this.
+  navigate(url) {
+    navigate(url);
+  }
+
+  maybeMakeWebFeatureRequired() {
+    const webFeatureField = this.shadowRoot?.querySelector<ChromedashFormField>(
+      'chromedash-form-field[name="web_feature"]'
+    );
+    if (!webFeatureField) {
+      return;
+    }
+    let featureType = FEATURE_TYPES.FEATURE_TYPE_INCUBATE_ID[0];
+    for (const fv of this.fieldValues) {
+      if (fv.name == 'feature_type' && fv.value !== undefined) {
+        featureType = fv.value;
+        break;
+      }
+    }
+    if (featureType == FEATURE_TYPES.FEATURE_TYPE_CODE_CHANGE_ID[0]) {
+      webFeatureField.style.display = 'none';
+      webFeatureField.forceRequired = false;
+    } else {
+      webFeatureField.style.display = '';
+      webFeatureField.forceRequired =
+        featureType == FEATURE_TYPES.FEATURE_TYPE_INCUBATE_ID[0] ||
+        featureType == FEATURE_TYPES.FEATURE_TYPE_EXISTING_ID[0];
+    }
+  }
+
+  maybeMakeEnterpriseFeatureCategoriesRequired() {
+    const enterpriseFeatureCategoriesField =
+      this.shadowRoot?.querySelector<ChromedashFormField>(
+        'chromedash-form-field[name="enterprise_feature_categories"]'
+      );
+    if (!enterpriseFeatureCategoriesField) {
+      return;
+    }
+    let enterpriseImpact = ENTERPRISE_IMPACT.IMPACT_NONE[0];
+    for (const fv of this.fieldValues) {
+      if (fv.name === 'enterprise_impact' && fv.value !== undefined) {
+        enterpriseImpact = fv.value;
+        break;
+      }
+    }
+    enterpriseFeatureCategoriesField.forceRequired =
+      enterpriseImpact > ENTERPRISE_IMPACT.IMPACT_NONE[0] ||
+      this.isEnterpriseFeature;
+  }
+
+  // Handler to update form values when a field update event is fired.
+  handleFormFieldUpdate(event) {
+    const value = event.detail.value;
+    // Index represents which form was updated.
+    const index = event.detail.index;
+    if (index >= this.fieldValues.length) {
+      throw new Error('Out of bounds index when updating field values.');
+    }
+    // The field has been updated, so it is considered touched.
+    this.fieldValues[index].touched = true;
+    this.fieldValues[index].value = value;
+    this.fieldValues[index].isMarkdown = event.detail.isMarkdown;
+    this.maybeMakeWebFeatureRequired();
+    this.maybeMakeEnterpriseFeatureCategoriesRequired();
+  }
+
+  renderSubHeader() {
+    return html`
+      <div id="subheader" style="display:block">
+        <span style="float:right; margin-right: 2em">
+          <a
+            href="https://github.com/GoogleChrome/chromium-dashboard/issues/new?labels=Feedback&amp;template=process-and-guide-ux-feedback.md"
+            target="_blank"
+            rel="noopener"
+            >Process and UI feedback</a
+          ></span
+        >
+        <h2 data-testid="add-a-feature">Add a feature</h2>
+      </div>
+    `;
+  }
+
+  renderWarnings() {
+    if (this.isEnterpriseFeature) {
+      return html`
+        <div class="process-notice">
+          <p>
+            Use this form if your feature should be mentioned in the Enterprise
+            Release Notes.
+          </p>
+        </div>
+      `;
+    } else {
+      return html`
+        <div class="process-notice">
+          <p>
+            Please see the
+            <a
+              href="https://www.chromium.org/blink/launching-features"
+              target="_blank"
+              rel="noopener"
+              >Launching features</a
+            >
+            page for process instructions.
+          </p>
+
+          <p>
+            Googlers: Please follow the instructions at
+            <a
+              href="https://goto.corp.google.com/wp-launch-guidelines"
+              target="_blank"
+              rel="noopener"
+              >go/wp-launch-guidelines</a
+            >
+            (internal document) to determine whether you also require an
+            internal review.
+          </p>
+        </div>
+      `;
+    }
+  }
+
+  renderForm() {
+    const newFeatureInitialValues = {
+      owner: this.userEmail,
+      shipping_year: new Date().getFullYear(),
+    };
+    const previousFieldValues = [...this.fieldValues];
+    this.fieldValues.length = 0;
+    this.fieldValues.feature = this.feature;
+
+    const formFields = this.isEnterpriseFeature
+      ? ENTERPRISE_NEW_FEATURE_FORM_FIELDS
+      : NEW_FEATURE_FORM_FIELDS;
+
+    let nextFieldIndex = 0;
+    const renderFormField = (field, className?) => {
+      const fieldProps = ALL_FIELDS[field];
+      const featureJSONKey = fieldProps.name || field;
+      const initialValue = this.isEnterpriseFeature
+        ? (fieldProps.enterprise_initial ?? fieldProps.initial)
+        : fieldProps.initial;
+      let value = newFeatureInitialValues[field] ?? initialValue;
+      const index = nextFieldIndex++;
+      const existingField = previousFieldValues.find(
+        fv => fv.name === featureJSONKey
+      );
+      if (!existingField) {
+        this.fieldValues.push({
+          name: featureJSONKey,
+          touched: true, // Submit everything
+          value,
+        });
+      } else if (field === 'owner' && !existingField.value && value) {
+        existingField.value = value;
+        this.fieldValues.push(existingField);
+      } else {
+        value = existingField.value;
+        this.fieldValues.push(existingField);
+      }
+
+      return html`
+        <chromedash-form-field
+          name=${field}
+          index=${index}
+          value=${value}
+          disabledReason="${getDisabledHelpText(field)}"
+          .fieldValues=${this.fieldValues}
+          ?forEnterprise=${this.isEnterpriseFeature}
+          @form-field-update="${this.handleFormFieldUpdate}"
+          class="${className || ''}"
+        ></chromedash-form-field>
+      `;
+    };
+
+    const extraFields = !this.isEnterpriseFeature
+      ? renderFormField('feature_type_radio_group', 'choices')
+      : nothing;
+    const mainFields = formFields.map(field =>
+      renderFormField(
+        field,
+        field === 'enterprise_product_category' ? 'choices' : null
+      )
+    );
+    this.fieldValues.length = nextFieldIndex;
+
+    const submitLabel = this.submitting
+      ? 'Submitting...'
+      : this.isEnterpriseFeature
+        ? 'Continue'
+        : 'Submit';
+    return html`
+      <section id="stage_form">
+        <form>
+          <input type="hidden" name="token" />
+          <chromedash-form-table ${ref(this.registerHandlers)}>
+            ${this.renderWarnings()} ${extraFields} ${mainFields}
+          </chromedash-form-table>
+          <input
+            type="submit"
+            class="primary"
+            value=${submitLabel}
+            ?disabled=${this.submitting}
+          />
+        </form>
+      </section>
+    `;
+  }
+
+  render() {
+    return html` ${this.renderSubHeader()} ${this.renderForm()} `;
+  }
+}

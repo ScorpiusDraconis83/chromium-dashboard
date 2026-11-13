@@ -12,24 +12,431 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""API endpoints for interacting with and managing origin trials and their extensions."""
+
+import concurrent.futures
+import logging
+import re
+from typing import Any
+
+import flask
+import json5
 import requests
-from framework import basehandlers
-from framework import origin_trials_client
+import validators
+from chromestatus_openapi.models import (
+    CreateOriginTrialRequest,
+    GetOriginTrialsResponse,
+    SuccessMessage,
+)
+
+import settings
+from framework import basehandlers, origin_trials_client, permissions, utils
+from internals import core_enums, notifier_helpers
+from internals.core_models import FeatureEntry, Stage
+from internals.review_models import Gate
+
+CHROMIUM_SRC_FILES = [
+    {
+        'name': 'enabled_features_text',
+        'url': core_enums.ENABLED_FEATURES_FILE_URL,
+    },  # noqa: E501
+    {'name': 'grace_period_file', 'url': core_enums.GRACE_PERIOD_FILE},
+]
+CHROMIUM_USE_COUNTER_FILES_MAP = {
+    core_enums.BlinkHistogramID.web_feature: {
+        'name': 'webfeature_file',
+        'url': core_enums.WEBFEATURE_FILE_URL,
+    },
+    core_enums.BlinkHistogramID.webdx_feature: {
+        'name': 'webdxfeature_file',
+        'url': core_enums.WEBDXFEATURE_FILE_URL,
+    },
+    core_enums.BlinkHistogramID.css_property_id: {
+        'name': 'css_property_id_file',
+        'url': core_enums.CSS_PROPERTY_ID_FILE_URL,
+    },  # noqa: E501
+}
 
 
-class OriginTrialsAPI(basehandlers.APIHandler):
+def get_chromium_files_for_validation(
+    uc_type: core_enums.BlinkHistogramID | None,
+) -> dict[str, str]:  # noqa: E501
+    """Get all chromium file contents stored in a dictionary"""  # noqa: D415
+    chromium_files = {}  # Chromium source file contents.
+    files_to_fetch = []
+    # Only obtain the relevant use counter file.
+    if uc_type:
+        files_to_fetch.append(CHROMIUM_USE_COUNTER_FILES_MAP[uc_type])
+    files_to_fetch.extend(CHROMIUM_SRC_FILES)
 
-  def do_get(self, **kwargs):
-    """Get a list of all origin trials.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_name = {
+            executor.submit(utils.get_chromium_file, f['url']): f['name']  # noqa: E501
+            for f in files_to_fetch
+        }
+        for future in concurrent.futures.as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                chromium_files[name] = future.result()
+            except Exception as exc:
+                raise exc
+    return chromium_files
 
-    Returns:
-      A list of data on all public origin trials.
-    """
-    try:
-      trials_list = origin_trials_client.get_trials_list()
-    except requests.exceptions.RequestException:
-      self.abort(500, 'Error obtaining origin trial data from API')
-    except KeyError:
-      self.abort(500, 'Malformed response from origin trials API')
 
-    return trials_list
+def _get_use_counter_type(uc: str | None) -> core_enums.BlinkHistogramID | None:
+    """Discern the use counter type based on the prefix."""
+    if not uc:
+        return None
+    if uc.startswith('WebDXFeature::'):
+        return core_enums.BlinkHistogramID.webdx_feature
+    if uc.startswith('CSSSampleId::'):
+        return core_enums.BlinkHistogramID.css_property_id
+    return core_enums.BlinkHistogramID.web_feature
+
+
+def find_use_counter_value(
+    body: dict, chromium_files_dict: dict[str, str]
+) -> int | None:
+    """Find where the use counter is defined and return its value."""
+    # Chromium file checks can be bypassed, but only in non-prod environments.
+    if (
+        not settings.PROD
+        and body['ot_creation__bypass_file_checks']
+        and body['ot_creation__bypass_file_checks']['value']
+    ):
+        return 0
+    use_counter_name = (
+        body['ot_webfeature_use_counter']['value']
+        if body['ot_webfeature_use_counter']
+        else None
+    )
+    uc_type = _get_use_counter_type(use_counter_name)
+    if not uc_type or not use_counter_name:
+        return None
+
+    match: re.Match | None = None
+    expression = ''
+    file = ''
+    # Defaults for WebFeature use counter.
+    if uc_type == core_enums.BlinkHistogramID.web_feature:
+        expression = f'(?<={use_counter_name} = )[0-9]+'
+        file = chromium_files_dict.get('webfeature_file', '')
+    if uc_type == core_enums.BlinkHistogramID.webdx_feature:
+        # Remove "WebDXFeature::" prefix.
+        expression = f'(?<={use_counter_name[14:]} = )[0-9]+'
+        file = chromium_files_dict.get('webdxfeature_file', '')
+    if uc_type == core_enums.BlinkHistogramID.css_property_id:
+        # Remove "CSSSampleId::" prefix.
+        expression = f'(?<={use_counter_name[13:]} = )[0-9]+'
+        file = chromium_files_dict.get('css_property_id_file', '')
+    match = re.search(expression, file)
+    if match:
+        return int(match.group(0))
+    return None
+
+
+class OriginTrialsAPI(basehandlers.EntitiesAPIHandler):
+    """API for managing origin trials."""
+
+    def do_get(self, **kwargs):
+        """Get a list of all origin trials.
+
+        Returns:
+          A list of data on all public origin trials.
+        """
+        try:
+            trials_list = origin_trials_client.get_trials_list()
+        except requests.exceptions.RequestException:
+            self.abort(500, 'Error obtaining origin trial data from API')
+        except KeyError:
+            self.abort(500, 'Malformed response from origin trials API')
+
+        return GetOriginTrialsResponse.from_dict({'origin_trials': trials_list})
+
+    def _is_in_file(self, file_content: str | None, substring: str) -> bool:
+        """Check if a substring is in the file content, bypassing if empty."""
+        return not file_content or substring in file_content
+
+    def _validate_creation_args(
+        self, body: dict, chromium_files: dict
+    ) -> dict[str, str]:
+        """Check that all provided OT creation arguments are valid."""
+        validation_errors: dict[str, str] = {}
+        chromium_trial_name = (
+            body['ot_chromium_trial_name']['value']
+            if body['ot_chromium_trial_name']
+            else None
+        )
+        if chromium_trial_name is None:
+            self.abort(400, 'Chromium trial name not specified.')
+
+        # Check if a trial already exists with the same name.
+        try:
+            trials_list = origin_trials_client.get_trials_list()
+        except requests.exceptions.RequestException:
+            self.abort(500, 'Error obtaining origin trial data from API')
+
+        if any(
+            trial['origin_trial_feature_name'] == chromium_trial_name
+            for trial in trials_list
+        ):
+            validation_errors['ot_chromium_trial_name'] = (
+                'Chromium trial name is already used by another origin trial'
+            )
+
+        enabled_features_text = chromium_files.get('enabled_features_text', '')
+        enabled_features_json: dict[str, Any] | None = None
+        if enabled_features_text:
+            try:
+                enabled_features_json = json5.loads(enabled_features_text)
+            except ValueError:
+                logging.error(
+                    'Failed to parse runtime_enabled_features.json5 file'
+                )
+
+            if enabled_features_json is not None:
+                if not any(
+                    feature.get('origin_trial_feature_name')
+                    == chromium_trial_name  # noqa: E501
+                    for feature in enabled_features_json.get('data', [])
+                ):
+                    validation_errors['ot_chromium_trial_name'] = (
+                        'Origin trial feature name not found in file'
+                    )
+
+        is_dep_trial = (
+            body['ot_is_deprecation_trial']
+            and body['ot_is_deprecation_trial']['value']
+        )
+        if not is_dep_trial:
+            webfeature_use_counter = (
+                body['ot_webfeature_use_counter']['value']
+                if body['ot_webfeature_use_counter']
+                else None
+            )
+            # Client will add a prefix to a WebDXFeature use counter.
+            uc_type = _get_use_counter_type(webfeature_use_counter)
+
+            # Check for valid WebFeature use counter specifications.
+            if not webfeature_use_counter:
+                validation_errors['ot_webfeature_use_counter'] = (
+                    'No UseCounter specified for non-deprecation trial.'
+                )
+            elif (
+                uc_type == core_enums.BlinkHistogramID.web_feature
+                and not self._is_in_file(
+                    chromium_files.get('webfeature_file'),
+                    f'{webfeature_use_counter} =',
+                )
+            ):
+                validation_errors['ot_webfeature_use_counter'] = (
+                    'UseCounter not landed in web_feature.mojom'
+                )
+            # Check for valid WebDXFeature use counter specifications.
+            elif uc_type == core_enums.BlinkHistogramID.webdx_feature:
+                formatted_use_counter = webfeature_use_counter[14:]
+                if not formatted_use_counter:
+                    validation_errors['ot_webfeature_use_counter'] = (
+                        'No WebDXFeature use counter provided.'
+                    )
+                elif not self._is_in_file(
+                    chromium_files.get('webdxfeature_file'),
+                    f'{formatted_use_counter} =',
+                ):
+                    validation_errors['ot_webfeature_use_counter'] = (
+                        'UseCounter not landed in webdx_feature.mojom'
+                    )
+            # CSSSampleId validation.
+            elif uc_type == core_enums.BlinkHistogramID.css_property_id:
+                formatted_use_counter = webfeature_use_counter[13:]
+                if not formatted_use_counter:
+                    validation_errors['ot_webfeature_use_counter'] = (
+                        'No CSSSampleId use counter provided.'
+                    )
+                elif not self._is_in_file(
+                    chromium_files.get('css_property_id_file'),
+                    f'{formatted_use_counter} = ',
+                ):
+                    validation_errors['ot_webfeature_use_counter'] = (
+                        'UseCounter not landed in css_property_id.mojom'
+                    )
+
+        has_third_party_support = (
+            body['ot_has_third_party_support']['value']
+            if body['ot_has_third_party_support']
+            else None
+        )
+        if has_third_party_support and enabled_features_json is not None:
+            for feature in enabled_features_json.get('data', []):
+                if feature.get(
+                    'origin_trial_feature_name'
+                ) == chromium_trial_name and not feature.get(
+                    'origin_trial_allows_third_party', False
+                ):
+                    validation_errors['ot_has_third_party_support'] = (
+                        'One or more features do not have third party support '
+                        'set in runtime_enabled_features.json5. Feature name: '
+                        f'{feature["name"]}'
+                    )
+
+        is_critical_trial = (
+            body['ot_is_critical_trial']['value']
+            if body['ot_is_critical_trial']
+            else None
+        )
+        if is_critical_trial:
+            if not self._is_in_file(
+                chromium_files.get('grace_period_file'),
+                f'blink::mojom::OriginTrialFeature::k{chromium_trial_name}',
+            ):
+                validation_errors['ot_is_critical_trial'] = (
+                    'Use counter has not landed in grace period array '
+                    'for critical trial'
+                )
+
+        return validation_errors
+
+    def check_post_permissions(self, fe: FeatureEntry) -> flask.Response | dict:
+        """Raise an exception or redirect if the user cannot request OT."""
+        if permissions.is_google_or_chromium_account(self.get_current_user()):
+            return {}
+
+        redirect_resp = permissions.validate_feature_edit_permission(self, fe)
+        return redirect_resp
+
+    def do_post(self, **kwargs):
+        """Handle POST requests."""
+        fe, ot_stage = self.get_specified_feature_and_stage(**kwargs)
+
+        # Check that user has permission to edit the feature associated
+        # with the origin trial, or has a @google or @chromium account.
+        redirect_resp = self.check_post_permissions(fe)
+        if redirect_resp:
+            return redirect_resp
+
+        gates: list[Gate] = Gate.query(
+            Gate.stage_id == ot_stage.key.integer_id()
+        )
+        for gate in gates:
+            if gate.state not in Gate.APPROVED_STATES:
+                self.abort(400, 'Unapproved gate found for trial stage.')
+
+        # TODO(markxiong0122): remove to_dict() when PR#4213 is merged
+        body = CreateOriginTrialRequest.from_dict(
+            self.get_json_param_dict()
+        ).to_dict()  # noqa: E501
+        use_counter = (
+            body['ot_webfeature_use_counter']['value']
+            if body['ot_webfeature_use_counter']
+            else None
+        )
+        uc_type = _get_use_counter_type(use_counter)
+        try:
+            chromium_files_dict = get_chromium_files_for_validation(uc_type)
+        except Exception as exc:
+            self.abort(
+                500, f'Error obtaining Chromium file for validation: {str(exc)}'
+            )
+        # Chromium file checks can be bypassed, but only in non-prod environments.
+        if (
+            settings.PROD
+            or not body['ot_creation__bypass_file_checks']
+            or not body['ot_creation__bypass_file_checks']['value']
+        ):
+            validation_errors = self._validate_creation_args(
+                body, chromium_files_dict
+            )  # noqa: E501
+            if validation_errors:
+                return {
+                    'message': 'Errors found when validating arguments',
+                    'errors': validation_errors,
+                }
+        self.update_stage(ot_stage, body, [])
+        ot_stage.ot_use_counter_bucket_number = find_use_counter_value(
+            body, chromium_files_dict
+        )  # noqa: E501
+
+        # Flag OT stage as ready to be created.
+        ot_stage.ot_setup_status = core_enums.OT_READY_FOR_CREATION
+        ot_stage.put()
+        return SuccessMessage(
+            message='Origin trial creation request submitted.'
+        ).to_dict()  # noqa: E501
+
+    def _validate_extension_args(
+        self, ot_stage: Stage, extension_stage: Stage
+    ) -> None:
+        """Abort if any arguments used for origin trial extension are invalid."""
+        trial_id = ot_stage.origin_trial_id
+        if trial_id is None:
+            self.abort(400, f'Invalid argument for trial_id: {trial_id}')
+
+        milestones = extension_stage.milestones
+        if milestones is None or milestones.desktop_last is None:
+            self.abort(404, 'Extension stage has no end milestone defined.')
+        intent_url = extension_stage.intent_thread_url
+        if intent_url is None or not validators.url(intent_url):
+            self.abort(
+                400,
+                (f'Invalid argument for extension_intent_url: {intent_url}'),
+            )
+
+        gate = Gate.query(
+            Gate.stage_id == extension_stage.key.integer_id()
+        ).get()
+        if not gate or (gate.state not in Gate.APPROVED_STATES):
+            self.abort(
+                400, 'Extension has not received the required approvals.'
+            )
+
+    def do_patch(self, **kwargs):
+        """Extends an existing origin trial"""  # noqa: D415
+        fe, extension_stage = self.get_specified_feature_and_stage(
+            feature_id=kwargs['feature_id'],
+            stage_id=kwargs['extension_stage_id'],
+        )
+        extension_stage_id = extension_stage.key.integer_id()
+
+        if extension_stage.ot_stage_id is None:
+            self.abort(
+                400,
+                msg=(
+                    f'Extension stage {extension_stage_id} does not '
+                    'have associated origin trial stage.'
+                ),
+            )
+        ot_stage: Stage | None = Stage.get_by_id(extension_stage.ot_stage_id)
+        if ot_stage is None:
+            self.abort(
+                404, msg=f'OT stage {extension_stage.ot_stage_id} not found'
+            )
+
+        # Check that user has permission to edit the feature
+        # associated with the origin trial.
+        redirect_resp = permissions.validate_feature_edit_permission(self, fe)
+        if redirect_resp:
+            return redirect_resp
+
+        self._validate_extension_args(ot_stage, extension_stage)
+
+        try:
+            origin_trials_client.extend_origin_trial(
+                ot_stage.origin_trial_id,
+                extension_stage.milestones.desktop_last,
+                extension_stage.intent_thread_url,
+            )
+        except requests.exceptions.RequestException:
+            self.abort(500, 'Error in request to origin trials API')
+        except KeyError:
+            self.abort(500, 'Malformed response from Schedule API')
+
+        # This extension has been processed and action is no longer needed.
+        extension_stage.ot_action_requested = False
+        extension_stage.put()
+
+        notifier_helpers.send_trial_extended_notification(
+            ot_stage, extension_stage
+        )
+        return SuccessMessage(
+            message='Origin trial extended successfully.'
+        ).to_dict()  # noqa: E501

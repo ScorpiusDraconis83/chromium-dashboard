@@ -21,7 +21,6 @@ node_modules
 # Generated files
 static/css/
 static/dist/
-static/js/
 
 # OS files
 *.DS_Store
@@ -43,3 +42,18 @@ test-results/
 
 # API Key for local development
 ot_api_key.txt
+gemini_api_key.txt
+github_token.txt
+
+# Typescript incremental build
+tsconfig.tsbuildinfo
+
+# rollup cache
+.rollup.cache/
+
+# build output
+build/
+
+# Temporary
+packages/playwright/playwright.config.ts
+.devcontainer/devcontainer-lock.json

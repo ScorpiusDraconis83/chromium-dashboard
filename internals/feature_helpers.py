@@ -13,430 +13,1314 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from asyncio import Future
+"""Helper functions and filters for querying and formatting feature and stage models."""
+
 import logging
-from typing import Any, Optional
+import re
+from asyncio import Future
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, TypedDict
+
 from google.cloud import ndb  # type: ignore
 
+import settings
 from api import converters
-from framework import rediscache
-from framework import users
-from internals import stage_helpers
-from internals.core_enums import *
-from internals.core_models import FeatureEntry, Stage
-from internals.data_types import VerboseFeatureDict
+from framework import permissions, rediscache, users
+from framework.utils import get_current_milestone_info
+from internals import core_enums, link_helpers
+from internals.core_models import (
+    FeatureEntry,
+    FeatureSummarySuggestion,
+    MilestoneSet,
+    Stage,
+)
+from internals.review_models import Gate, Vote
+from internals.stage_helpers import organize_all_stages_by_feature
 
 
-def filter_unlisted(feature_list: list[dict]) -> list[dict]:
-  """Filters a feature list to display only features the user should see."""
-  user = users.get_current_user()
-  email = None
-  if user:
-    email = user.email()
-  listed_features = []
-  for f in feature_list:
-    # Owners and editors of a feature should still be able to see their features.
-    if ((not f.get('unlisted', False)) or
-        ('browsers' in f and email in f['browsers']['chrome']['owners']) or
-        (email in f.get('editors', [])) or
-        (email is not None and f.get('creator') == email)):
-      listed_features.append(f)
+class ShippingFeatureInfo(TypedDict):
+    """Type dictionary for shipping feature info."""
 
-  return listed_features
+    name: str
+    id: int
+    chromestatus_url: str
+    tracking_bug_url: str
+    launch_bug_url: str
+    finch_name: str
+    non_finch_justification: str
+    owner_emails: list[str]
+    intent_to_ship: str
 
 
-def _get_entries_by_id_async(ids) -> Future | None:
-  if ids:
-    q = FeatureEntry.query(FeatureEntry.key.IN(
-        [ndb.Key('FeatureEntry', id) for id in ids]))
-    q = q.order(FeatureEntry.name)
-    return q.fetch_async()
-  return None
+# Enum representing the criteria that is missing for a feature that is shipping.
+class Criteria(str, Enum):
+    """Enum for shipping criteria."""
+
+    # Intent to Ship thread URL is missing.
+    INTENT_TO_SHIP_MISSING = 'i2s'
+    # API Owner approvals have not been obtained on the ship gate.
+    API_OWNER_LGTMS_MISSING = 'lgtms'
+    # Both the finch name and the non-finch justification fields are missing.
+    FINCH_NAME_MISSING = 'finch_name'
+    # The feature exists in runtime_enabled_features.json5, but is not marked as 'status: "stable"'.  # noqa: E501
+    RUNTIME_FEATURE_NOT_STABLE = 'runtime_feature_not_stable'
+    # The feature exists in content_features.cc, but is not marked as enabled.
+    CONTENT_FEATURE_NOT_ENABLED = 'content_feature_not_enabled'
+    CHROMIUM_FEATURE_NOT_FOUND = 'chromium_feature_not_found'
 
 
-def _get_future_results(async_features: Future | None) -> list[FeatureEntry]:
-  if async_features is None:
-    return []
-  return async_features.result()
-
-def get_features_in_release_notes(milestone: int):
-  cache_key = '%s|%s|%s' % (
-      FeatureEntry.DEFAULT_CACHE_KEY, 'release_notes_milestone', milestone)
-
-  cached_features = rediscache.get(cache_key)
-  if cached_features:
-    return cached_features
-
-  stages = Stage.query(
-          Stage.archived == False,
-      ndb.OR(Stage.milestones.desktop_first >= milestone,
-          Stage.milestones.android_first >= milestone,
-          Stage.milestones.ios_first >= milestone,
-          Stage.milestones.webview_first >= milestone,
-          Stage.milestones.desktop_last >= milestone,
-          Stage.milestones.ios_last >= milestone,
-          Stage.milestones.webview_last >= milestone,
-          Stage.rollout_milestone >= milestone),
-      Stage.stage_type.IN([STAGE_BLINK_SHIPPING, STAGE_PSA_SHIPPING,
-          STAGE_FAST_SHIPPING, STAGE_DEP_SHIPPING, STAGE_ENT_ROLLOUT])).filter().fetch()
-  
-  feature_ids = list(set({
-      *[s.feature_id for s in stages]}))
-  features = [dict(converters.feature_entry_to_json_verbose(f))
-            for f in _get_future_results(_get_entries_by_id_async(feature_ids))]
-  features = [f for f in filter_unlisted(features) 
-    if not f['deleted'] and 
-      (f['breaking_change'] or f['feature_type_int'] == FEATURE_TYPE_ENTERPRISE_ID) and
-      (f['first_enterprise_notification_milestone'] == None or
-       f['first_enterprise_notification_milestone'] <= milestone)]
-
-  rediscache.set(cache_key, features)
-  return features
+# Blink components that are hard to verify existence in the Chromium code.
+# We bypass the Chromium code checks here in order to avoid false positives.
+BLINK_COMPONENTS_SKIP_CHROMIUM_CHECKS = ['Blink>WebGPU']
 
 
-def get_in_milestone(milestone: int,
-    show_unlisted: bool=False) -> dict[str, list[dict[str, Any]]]:
-  """Return {reason: [feature_dict]} with all the reasons a feature can
-  be part of a milestone.
-
-  Because the cache may rarely have stale data, this should only be
-  used for displaying data read-only, not for populating forms or
-  procesing a POST to edit data.  For editing use case, load the
-  data from NDB directly.
-  """
-  features_by_type = {}
-  cache_key = '%s|%s|%s' % (
-      FeatureEntry.DEFAULT_CACHE_KEY, 'milestone', milestone)
-  cached_features_by_type = rediscache.get(cache_key)
-  if cached_features_by_type:
-    features_by_type = cached_features_by_type
-  else:
-    all_features: dict[str, list[FeatureEntry]] = {}
-    all_features[IMPLEMENTATION_STATUS[ENABLED_BY_DEFAULT]] = []
-    all_features[IMPLEMENTATION_STATUS[DEPRECATED]] = []
-    all_features[IMPLEMENTATION_STATUS[REMOVED]] = []
-    all_features[IMPLEMENTATION_STATUS[INTERVENTION]] = []
-    all_features[IMPLEMENTATION_STATUS[ORIGIN_TRIAL]] = []
-    all_features[IMPLEMENTATION_STATUS[BEHIND_A_FLAG]] = []
-
-    logging.info('Getting chronological feature list in milestone %d',
-                milestone)
-    # Start each query asynchronously in parallel.
-
-    # Shipping stages with a matching desktop milestone.
-    # Note: Enterprise features use STAGE_ENT_ROLLOUT and are NOT included.
-    q = Stage.query(Stage.milestones.desktop_first == milestone,
-        ndb.OR(Stage.stage_type == STAGE_BLINK_SHIPPING,
-            Stage.stage_type == STAGE_PSA_SHIPPING,
-            Stage.stage_type == STAGE_FAST_SHIPPING,
-            Stage.stage_type == STAGE_DEP_SHIPPING))
-    q = q.filter()
-    desktop_shipping_future = q.fetch_async()
-
-    # Shipping stages with a matching android shipping milestone
-    # but no desktop milestone.
-    q = Stage.query(Stage.milestones.android_first == milestone,
-        Stage.milestones.desktop_first == None,
-        Stage.stage_type.IN((STAGE_BLINK_SHIPPING, STAGE_PSA_SHIPPING,
-            STAGE_FAST_SHIPPING, STAGE_DEP_SHIPPING)))
-    android_only_shipping_future = q.fetch_async()
-
-    # Origin trial stages (Desktop) in this milestone.
-    q = Stage.query(Stage.milestones.desktop_first == milestone,
-        Stage.stage_type.IN((STAGE_BLINK_ORIGIN_TRIAL, STAGE_FAST_ORIGIN_TRIAL,
-            STAGE_DEP_DEPRECATION_TRIAL)))
-    desktop_origin_trial_future = q.fetch_async()
-
-    # Origin trial stages (Android) in this milestone.
-    q = Stage.query(Stage.milestones.android_first == milestone,
-        Stage.milestones.desktop_first == None,
-        Stage.stage_type.IN((STAGE_BLINK_ORIGIN_TRIAL, STAGE_FAST_ORIGIN_TRIAL,
-            STAGE_DEP_DEPRECATION_TRIAL)))
-    android_origin_trial_future = q.fetch_async()
-
-    # Origin trial stages (Webview) in this milestone.
-    q = Stage.query(Stage.milestones.webview_first == milestone,
-        Stage.milestones.desktop_first == None,
-        Stage.stage_type.IN((STAGE_BLINK_ORIGIN_TRIAL, STAGE_FAST_ORIGIN_TRIAL,
-            STAGE_DEP_DEPRECATION_TRIAL)))
-    webview_origin_trial_future = q.fetch_async()
-
-    # Dev trial stages (Desktop) in this milestone.
-    q = Stage.query(Stage.milestones.desktop_first == milestone,
-        Stage.stage_type.IN((STAGE_BLINK_DEV_TRIAL, STAGE_PSA_DEV_TRIAL,
-            STAGE_FAST_DEV_TRIAL, STAGE_DEP_DEV_TRIAL)))
-    desktop_dev_trial_future = q.fetch_async()
-
-    # Dev trial stages (Android) in this milestone.
-    q = Stage.query(Stage.milestones.android_first == milestone,
-        Stage.milestones.desktop_first == None,
-        Stage.stage_type.IN((STAGE_BLINK_DEV_TRIAL, STAGE_PSA_DEV_TRIAL,
-            STAGE_FAST_DEV_TRIAL, STAGE_DEP_DEV_TRIAL)))
-    android_dev_trial_future = q.fetch_async()
-
-    # Wait for all futures to complete and collect unique feature IDs.
-    desktop_shipping_ids = list({
-        *[s.feature_id for s in desktop_shipping_future.result()]})
-    android_only_shipping_ids = list({
-        *[s.feature_id for s in android_only_shipping_future.result()]})
-    desktop_origin_trials_ids = list({
-        *[s.feature_id for s in desktop_origin_trial_future.result()]})
-    android_origin_trials_ids = list({
-        *[s.feature_id for s in android_origin_trial_future.result()]})
-    webview_origin_trials_ids = list({
-        *[s.feature_id for s in webview_origin_trial_future.result()]})
-    desktop_dev_trials_ids = list({
-        *[s.feature_id for s in desktop_dev_trial_future.result()]})
-    android_dev_trials_ids = list({
-        *[s.feature_id for s in android_dev_trial_future.result()]})
-
-    # Query for FeatureEntry entities that match the stage feature IDs.
-    # Querying with an empty list will raise an error, so check if each
-    # list is not empty first.
-    desktop_shipping_future = _get_entries_by_id_async(desktop_shipping_ids)
-    android_only_shipping_future = _get_entries_by_id_async(
-        android_only_shipping_ids)
-    desktop_origin_trial_future = _get_entries_by_id_async(
-        desktop_origin_trials_ids)
-    android_origin_trial_future = _get_entries_by_id_async(
-        android_origin_trials_ids)
-    webview_origin_trial_future = _get_entries_by_id_async(
-        webview_origin_trials_ids)
-    desktop_dev_trial_future = _get_entries_by_id_async(
-        desktop_dev_trials_ids)
-    android_dev_trial_future = _get_entries_by_id_async(
-        android_dev_trials_ids)
-
-    desktop_shipping_features = _get_future_results(desktop_shipping_future)
-    android_only_shipping_features = _get_future_results(
-        android_only_shipping_future)
-    desktop_origin_trial_features = _get_future_results(
-        desktop_origin_trial_future)
-    android_origin_trial_features = _get_future_results(
-        android_origin_trial_future)
-    webview_origin_trial_features = _get_future_results(
-        webview_origin_trial_future)
-    desktop_dev_trial_features = _get_future_results(desktop_dev_trial_future)
-    android_dev_trial_features = _get_future_results(android_dev_trial_future)
-
-    # Push feature to list corresponding to the implementation status of
-    # feature in queried milestone
-    for feature in desktop_shipping_features:
-      if feature.impl_status_chrome == ENABLED_BY_DEFAULT:
-        all_features[IMPLEMENTATION_STATUS[ENABLED_BY_DEFAULT]].append(feature)
-      elif feature.impl_status_chrome == DEPRECATED:
-        all_features[IMPLEMENTATION_STATUS[DEPRECATED]].append(feature)
-      elif feature.impl_status_chrome == REMOVED:
-        all_features[IMPLEMENTATION_STATUS[REMOVED]].append(feature)
-      elif feature.impl_status_chrome == INTERVENTION:
-        all_features[IMPLEMENTATION_STATUS[INTERVENTION]].append(feature)
-      elif (feature.feature_type == FEATURE_TYPE_DEPRECATION_ID):
-        all_features[IMPLEMENTATION_STATUS[DEPRECATED]].append(feature)
-      elif feature.feature_type == FEATURE_TYPE_INCUBATE_ID:
-        all_features[IMPLEMENTATION_STATUS[ENABLED_BY_DEFAULT]].append(feature)
-
-    # Push feature to list corresponding to the implementation status
-    # of feature in queried milestone
-    for feature in android_only_shipping_features:
-      if feature.impl_status_chrome == ENABLED_BY_DEFAULT:
-        all_features[IMPLEMENTATION_STATUS[ENABLED_BY_DEFAULT]].append(feature)
-      elif feature.impl_status_chrome == DEPRECATED:
-        all_features[IMPLEMENTATION_STATUS[DEPRECATED]].append(feature)
-      elif feature.impl_status_chrome == REMOVED:
-        all_features[IMPLEMENTATION_STATUS[REMOVED]].append(feature)
-      elif (feature.feature_type == FEATURE_TYPE_DEPRECATION_ID):
-        all_features[IMPLEMENTATION_STATUS[DEPRECATED]].append(feature)
-      elif feature.feature_type == FEATURE_TYPE_INCUBATE_ID:
-        all_features[IMPLEMENTATION_STATUS[ENABLED_BY_DEFAULT]].append(feature)
-
-    for feature in desktop_origin_trial_features:
-      all_features[IMPLEMENTATION_STATUS[ORIGIN_TRIAL]].append(feature)
-
-    for feature in android_origin_trial_features:
-      all_features[IMPLEMENTATION_STATUS[ORIGIN_TRIAL]].append(feature)
-
-    for feature in webview_origin_trial_features:
-      all_features[IMPLEMENTATION_STATUS[ORIGIN_TRIAL]].append(feature)
-
-    for feature in desktop_dev_trial_features:
-      all_features[IMPLEMENTATION_STATUS[BEHIND_A_FLAG]].append(feature)
-
-    for feature in android_dev_trial_features:
-      all_features[IMPLEMENTATION_STATUS[BEHIND_A_FLAG]].append(feature)
-
-    # Construct results as: {type: [json_feature, ...], ...}.
-    for shipping_type in all_features:
-      all_features[shipping_type].sort(key=lambda f: f.name)
-      all_features[shipping_type] = [
-          f for f in all_features[shipping_type] if not f.deleted]
-      features_by_type[shipping_type] = [converters.feature_entry_to_json_basic(f)
-          for f in all_features[shipping_type]]
-
-    rediscache.set(cache_key, features_by_type)
-
-  for shipping_type in features_by_type:
-    if not show_unlisted:
-      features_by_type[shipping_type] = filter_unlisted(
-          features_by_type[shipping_type])
-
-  return features_by_type
+def filter_unlisted(feature_list: list[FeatureEntry]) -> list[FeatureEntry]:
+    """Filters a FeatureEntry list to display only features the user should see."""  # noqa: E501
+    user = users.get_current_user()
+    email = None
+    if user:
+        email = user.email()
+    return [
+        f
+        for f in feature_list
+        if (
+            not f.unlisted
+            # Owners and editors of a feature should still be able to see their features.  # noqa: E501
+            or email in f.owner_emails
+            or email in f.editor_emails
+            or (email is not None and f.creator_email == email)
+        )
+    ]
 
 
-def get_all(limit: Optional[int]=None,
-    order: str='-updated', filterby: Optional[tuple[str, Any]]=None,
-    update_cache: bool=False, keys_only: bool=False) -> list[dict]:
-  """Return JSON dicts for entities that fit the filterby criteria.
+def filter_unlisted_formatted(feature_list: list[dict]) -> list[dict]:
+    """Filters a feature list to display only features the user should see."""
+    user = users.get_current_user()
+    email = None
+    if user:
+        email = user.email()
+    listed_features = []
+    for f in feature_list:
+        # Owners and editors of a feature should still be able to see their features.  # noqa: E501
+        if (
+            (not f.get('unlisted', False))
+            or ('browsers' in f and email in f['browsers']['chrome']['owners'])
+            or (email in f.get('editors', []))
+            or (email is not None and f.get('creator') == email)
+        ):
+            listed_features.append(f)
 
-  Because the cache may rarely have stale data, this should only be
-  used for displaying data read-only, not for populating forms or
-  procesing a POST to edit data.  For editing use case, load the
-  data from NDB directly.
-  """
-  KEY = '%s|%s|%s|%s' % (
-      FeatureEntry.DEFAULT_CACHE_KEY, order, limit, keys_only)
-
-  # TODO(ericbidelman): Support more than one filter.
-  if filterby is not None:
-    s = ('%s%s' % (filterby[0], filterby[1])).replace(' ', '')
-    KEY += '|%s' % s
-
-  feature_list = rediscache.get(KEY)
-
-  if feature_list is None or update_cache:
-    query = FeatureEntry.query().order(-FeatureEntry.updated) #.order('name')
-    query = query.filter(FeatureEntry.deleted == False)
-
-    # TODO(ericbidelman): Support more than one filter.
-    if filterby:
-      filter_type, comparator = filterby
-      if filter_type == 'can_edit':
-        # can_edit will check if the user has any access to edit the feature.
-        # This includes being an owner, editor, or the original creator
-        # of the feature.
-        query = query.filter(
-          ndb.OR(FeatureEntry.owner_emails == comparator,
-              FeatureEntry.editor_emails == comparator,
-              FeatureEntry.creator_email == comparator,
-              FeatureEntry.spec_mentor_emails == comparator))
-      else:
-        query = query.filter(getattr(FeatureEntry, filter_type) == comparator)
-
-    feature_list = query.fetch(limit, keys_only=keys_only)
-    if not keys_only:
-      feature_list = [
-          converters.feature_entry_to_json_basic(f) for f in feature_list]
-
-    rediscache.set(KEY, feature_list)
-
-  return feature_list
+    return listed_features
 
 
-def get_by_ids(feature_ids: list[int],
-               update_cache: bool=True) -> list[dict[str, Any]]:
-  """Return a list of JSON dicts for the specified features.
+def filter_confidential_formatted(feature_list: list[dict]) -> list[dict]:
+    """Filters a feature list to display only features the user should see."""
+    user = users.get_current_user()
+    visible_features = []
+    for f in feature_list:
+        if permissions.can_view_feature_formatted(user, f):
+            visible_features.append(f)
 
-  Because the cache may rarely have stale data, this should only be
-  used for displaying data read-only, not for populating forms or
-  procesing a POST to edit data.  For editing use case, load the
-  data from NDB directly.
-  """
-  result_dict = {}
-  futures_by_id = {}
+    return visible_features
 
-  if update_cache:
-    lookup_keys = [
-        FeatureEntry.feature_cache_key(
-            FeatureEntry.DEFAULT_CACHE_KEY, feature_id)
-        for feature_id in feature_ids]
-    cached_features = rediscache.get_multi(lookup_keys)
+
+def filter_unpublished_formatted(feature_list: list[dict]) -> list[dict]:
+    """Filters a feature list to display only features marked ready to publish."""
+    user = users.get_current_user()
+    if permissions.is_google_or_chromium_account(
+        user
+    ) or permissions.can_admin_site(user):
+        return feature_list  # no filtering needed
+    visible_features = []
+    for f in feature_list:
+        if f['is_releasenotes_publish_ready']:
+            visible_features.append(f)
+
+    return visible_features
+
+
+def filter_confidential(feature_list: list[FeatureEntry]) -> list[FeatureEntry]:
+    """Filters a FeatureEntry list to display only features the user should see."""  # noqa: E501
+    user = users.get_current_user()
+    return [f for f in feature_list if permissions.can_view_feature(user, f)]
+
+
+def get_entries_by_id_async(ids) -> list[Future] | None:
+    """Asynchronously fetches FeatureEntry objects by their IDs."""
+    if ids:
+        return ndb.get_multi_async([ndb.Key('FeatureEntry', id) for id in ids])
+    return None
+
+
+def get_future_results(
+    async_features: list[Future] | None,
+) -> list[FeatureEntry]:
+    """Retrieve the results from a Future list containing FeatureEntries."""
+    if not async_features:
+        return []
+    features = [f.result() for f in async_features]
+    valid_features = [f for f in features if f is not None]
+    valid_features.sort(key=lambda f: f.name or '')
+    return valid_features
+
+
+def _filter_out_wp_features_lacking_enterprise_approval(
+    features: list[FeatureEntry],
+) -> list[FeatureEntry]:
+    """Take out any WP features that did not yet earn enterprise approval.
+    But, leave in any deprecation-type features.
+    """  # noqa: D205
+    FEATURE_TYPES_TO_FILTER = [
+        core_enums.FEATURE_TYPE_INCUBATE_ID,
+        core_enums.FEATURE_TYPE_EXISTING_ID,
+        core_enums.FEATURE_TYPE_CODE_CHANGE_ID,
+        # Not enterprise- or deprecation-type features.
+    ]
+    wp_feature_ids = {
+        fe.key.integer_id()
+        for fe in features
+        if fe.feature_type in FEATURE_TYPES_TO_FILTER
+    }
+    approved_enterprise_gates: list[Gate] = []
+    if wp_feature_ids:
+        approved_enterprise_gates = Gate.query(
+            # Use a range because the IN operator is limited to 30.  This gets
+            # extra Gates, but that doesn't matter.
+            Gate.feature_id >= min(wp_feature_ids),
+            Gate.feature_id <= max(wp_feature_ids),
+            Gate.gate_type == core_enums.GATE_ENTERPRISE_SHIP,
+            Gate.state.IN(Gate.APPROVED_STATES),
+        ).fetch()
+    approved_wp_feature_ids = {g.feature_id for g in approved_enterprise_gates}
+    result = [
+        fe
+        for fe in features
+        if (
+            fe.key.integer_id() not in wp_feature_ids
+            or fe.key.integer_id() in approved_wp_feature_ids
+        )
+    ]
+    return result
+
+
+format_origin_trial_url = link_helpers.format_origin_trial_url
+
+
+def get_developer_release_notes_features(
+    milestone: int,
+) -> list[dict[str, Any]]:
+    """Fetches and formats web platform features for developer.chrome.com release notes.
+
+    Note: This helper retrieves general shipping web standards features (incubations,
+    existing implementations, code changes, and deprecations) via get_in_milestone(),
+    applies confidentiality and unlisted visibility filters, and converts them to lean
+    OpenAPI ReleaseNoteFeature dictionaries with attached AI summary suggestions and
+    WebDX baseline statuses. For Chrome Enterprise IT administrator release notes
+    tracking enterprise impact and rollout stages, use
+    get_features_in_release_notes(milestone) instead.
+
+    Args:
+        milestone: The integer Chrome milestone (e.g., 135) to retrieve release notes for.
+
+    Returns:
+        A list of dictionaries matching the OpenAPI ReleaseNoteFeature schema.
+    """
+    milestone_data = get_in_milestone(milestone)
+    seen_ids: set[int] = set()
+    origin_trial_fids: set[int] = set()
+    deprecation_fids: set[int] = set()
+
+    origin_trial_urls: dict[int, str] = {}
+    stage_ids_by_fid: dict[int, set[int]] = {}
+    for reason, feature_dicts in milestone_data.items():
+        if reason in (
+            core_enums.IMPLEMENTATION_STATUS[core_enums.BEHIND_A_FLAG],
+            core_enums.ROLLOUT_SECTION,
+        ):
+            continue
+        for fdict in feature_dicts:
+            fid = fdict.get('id')
+            if not fid:
+                continue
+            seen_ids.add(fid)
+            stage_ids = fdict.get('roadmap_stage_ids') or []
+            if not stage_ids and fdict.get('stage_id'):
+                stage_ids = [fdict['stage_id']]
+            stage_ids_by_fid.setdefault(fid, set()).update(stage_ids)
+            if (
+                reason
+                == core_enums.IMPLEMENTATION_STATUS[core_enums.ORIGIN_TRIAL]
+            ):
+                origin_trial_fids.add(fid)
+                ot_id = fdict.get('origin_trial_id')
+                stage_id = stage_ids[0] if stage_ids else None
+                trial_url = format_origin_trial_url(
+                    origin_trial_id=ot_id, stage_id=stage_id
+                )
+                if trial_url:
+                    origin_trial_urls[fid] = trial_url
+
+            elif reason in (
+                core_enums.IMPLEMENTATION_STATUS[core_enums.DEPRECATED],
+                core_enums.IMPLEMENTATION_STATUS[core_enums.REMOVED],
+            ):
+                deprecation_fids.add(fid)
+
+    if not seen_ids:
+        return []
+
+    # Batch fetch FeatureEntry entities (prevents N+1 query loop)
+    feature_keys = [ndb.Key(FeatureEntry, fid) for fid in seen_ids]
+    raw_features = ndb.get_multi(feature_keys)
+    raw_features = [fe for fe in raw_features if fe]
+    psa_feature_ids = set(
+        fe.key.integer_id()
+        for fe in raw_features
+        if fe.feature_type == core_enums.FEATURE_TYPE_CODE_CHANGE_ID
+    )
+    feature_entries = filter_unlisted(filter_confidential(raw_features))
+    feature_entries.sort(key=lambda f: f.name or '')
+
+    # Batch fetch FeatureSummarySuggestion entities by key (prevents unbounded table scan)
+    valid_fids = [fe.key.integer_id() for fe in feature_entries if fe.key]
+    suggestion_keys = [
+        ndb.Key(FeatureSummarySuggestion, fid) for fid in valid_fids
+    ]
+    suggestions = ndb.get_multi(suggestion_keys)
+    applied_map = {
+        s.key.id(): s
+        for s in suggestions
+        if s and s.status == core_enums.SummarySuggestionStatus.APPLIED
+    }
+
+    all_stage_ids = [
+        sid
+        for fid in valid_fids
+        for sid in stage_ids_by_fid.get(fid, set())
+        if sid
+    ]
+    unapproved_stage_ids: set[int] = set()
+    if all_stage_ids:
+        gate_futures = [
+            Gate.query(
+                Gate.stage_id.IN(all_stage_ids[i : i + 30])
+            ).fetch_async()
+            for i in range(0, len(all_stage_ids), 30)
+        ]
+        for fut in gate_futures:
+            for gate in fut.get_result():
+                if (
+                    gate.gate_type == core_enums.GATE_API_SHIP
+                    and gate.feature_id in psa_feature_ids
+                ):
+                    continue  # We don't count API Owners gate on PSAs.
+                if gate.state not in Gate.APPROVED_STATES:
+                    unapproved_stage_ids.add(gate.stage_id)
+
+    formatted_features = []
+    for fe in feature_entries:
+        fid = fe.key.integer_id() if fe.key else 0
+        applied_suggestion = applied_map.get(fid)
+        if fid in origin_trial_fids:
+            milestone_classification = (
+                core_enums.ReleaseNoteMilestoneClassification.ORIGIN_TRIAL
+            )
+        elif (
+            fid in deprecation_fids
+            or fe.feature_type == core_enums.FEATURE_TYPE_DEPRECATION_ID
+            or fe.impl_status_chrome == core_enums.DEPRECATED
+        ):
+            milestone_classification = (
+                core_enums.ReleaseNoteMilestoneClassification.DEPRECATION
+            )
+        elif fe.impl_status_chrome == core_enums.REMOVED:
+            milestone_classification = (
+                core_enums.ReleaseNoteMilestoneClassification.REMOVAL
+            )
+        else:
+            milestone_classification = (
+                core_enums.ReleaseNoteMilestoneClassification.SHIPPING
+            )
+
+        ot_url = origin_trial_urls.get(fid)
+        rn_dict = converters.feature_entry_to_release_note_feature_dict(
+            fe,
+            applied_suggestion=applied_suggestion,
+            milestone_classification=milestone_classification,
+            origin_trial_url=ot_url,
+        )
+        rn_dict['is_pending_review'] = bool(
+            stage_ids_by_fid.get(fid, set()) & unapproved_stage_ids
+        )
+
+        formatted_features.append(rn_dict)
+
+    return formatted_features
+
+
+def get_features_in_release_notes(
+    milestone: int, end_milestone: int | None = None
+):
+    """Fetches Chrome Enterprise IT admin release notes features for a milestone or range.
+
+    Note: This helper specifically queries features with enterprise impact or enterprise
+    feature types, and formats them using the verbose dictionary schema with rollout
+    and approval fields for enterprise administrators. For public web developer and
+    web standards release notes (developer.chrome.com), use
+    get_developer_release_notes_features(milestone) instead.
+    """
+    actual_end_milestone = (
+        end_milestone if end_milestone is not None else milestone
+    )
+
+    cache_key = '%s|%s|%s' % (
+        FeatureEntry.SEARCH_CACHE_KEY,
+        'release_notes_milestone',
+        f'{milestone}_{end_milestone}'
+        if end_milestone is not None
+        else milestone,
+    )
+
+    cached_features = rediscache.get(cache_key)
     if cached_features:
-      result_dict = {f['id']: f
-                     for f in cached_features.values()
-                     if f is not None and f.get('id')}
+        logging.info('Returned cached features')
+        cached_features = filter_confidential_formatted(cached_features)
+        cached_features = filter_unpublished_formatted(cached_features)
+        return cached_features
 
-  for feature_id in feature_ids:
-    if result_dict.get(feature_id) is None:
-      futures_by_id[feature_id] = FeatureEntry.get_by_id_async(feature_id)
+    all_enterprise_feature_keys_future = FeatureEntry.query(
+        FeatureEntry.deleted == False,  # noqa: E712
+        ndb.OR(
+            FeatureEntry.enterprise_impact > core_enums.ENTERPRISE_IMPACT_NONE,
+            FeatureEntry.feature_type == core_enums.FEATURE_TYPE_ENTERPRISE_ID,
+        ),
+    ).fetch_async(keys_only=True)
+    stages = Stage.query(
+        Stage.archived == False,  # noqa: E712
+        Stage.stage_type.IN(
+            [
+                core_enums.STAGE_BLINK_SHIPPING,
+                core_enums.STAGE_PSA_SHIPPING,
+                core_enums.STAGE_FAST_SHIPPING,
+                core_enums.STAGE_DEP_SHIPPING,
+                core_enums.STAGE_ENT_ROLLOUT,
+            ]
+        ),
+        ndb.OR(
+            Stage.milestones.desktop_first >= milestone,
+            Stage.milestones.android_first >= milestone,
+            Stage.milestones.ios_first >= milestone,
+            Stage.milestones.webview_first >= milestone,
+            Stage.milestones.desktop_last >= milestone,
+            Stage.milestones.ios_last >= milestone,
+            Stage.milestones.webview_last >= milestone,
+            Stage.rollout_milestone >= milestone,
+        ),
+    ).fetch()
+    logging.info('Fetched %r relevent stages', len(stages))
+    all_enterprise_feature_ids = {
+        key.integer_id()
+        for key in all_enterprise_feature_keys_future.get_result()
+    }
+    logging.info(
+        'Finished fetching all %r enterprise feature IDs',
+        len(all_enterprise_feature_ids),
+    )
 
-  stages_dict = {}
-  if futures_by_id:
-    needed_ids = list(futures_by_id.keys())
-    stages_list = Stage.query(Stage.feature_id.IN(needed_ids), Stage.archived == False).fetch(None)
-    stages_dict = stage_helpers.organize_all_stages_by_feature(stages_list)
+    feature_ids: list[int] = list(
+        {s.feature_id for s in stages}.intersection(all_enterprise_feature_ids)
+    )
+    logging.info('Narrowed list of feature IDs to %r', len(feature_ids))
+    features_future = get_entries_by_id_async(feature_ids)
+    # Prefetch all stages for all those features, not just the stages that
+    # qualified the features to be considered.
+    prefetched_stages: list[Stage] = []
+    if feature_ids:
+        prefetched_stages = Stage.query(
+            Stage.feature_id.IN(feature_ids),
+            Stage.archived == False,  # noqa: E712
+        ).fetch()
+    prefetched_stages_dict = organize_all_stages_by_feature(prefetched_stages)
+    logging.info(
+        'prefetched %r stages for %r features',
+        len(prefetched_stages),
+        len(feature_ids),
+    )
+    features: list[FeatureEntry] = get_future_results(features_future)
+    features = _filter_out_wp_features_lacking_enterprise_approval(features)
+    formatted_features = []
+    for fe in features:
+        formatted_feature = converters.feature_entry_to_json_verbose(
+            fe,
+            prefetched_stages=prefetched_stages_dict.get(fe.key.integer_id()),
+        )
+        formatted_features.append(dict(formatted_feature))
+    logging.info('finished converting features to dicts')
 
-  for future in futures_by_id.values():
-    unformatted_feature: Optional[FeatureEntry] = future.get_result()
-    if unformatted_feature and not unformatted_feature.deleted:
-      feature_id = unformatted_feature.key.integer_id()
-      feature = converters.feature_entry_to_json_verbose(
-          unformatted_feature, prefetched_stages=stages_dict.get(feature_id))
-      if unformatted_feature.updated is not None:
-        feature['updated_display'] = (
-            unformatted_feature.updated.strftime("%Y-%m-%d"))
-      else:
-        feature['updated_display'] = ''
-      result_dict[feature_id] = feature
+    formatted_features = [
+        f
+        for f in filter_unlisted_formatted(formatted_features)
+        if (
+            f['first_enterprise_notification_milestone'] is None
+            or f['first_enterprise_notification_milestone']
+            <= actual_end_milestone
+        )
+    ]
+    logging.info('finished filtering')
 
-  if update_cache:
-    to_cache = {}
-    for feature_id in futures_by_id:
-      if feature_id in result_dict:
-        store_key = FeatureEntry.feature_cache_key(
-            FeatureEntry.DEFAULT_CACHE_KEY, feature_id)
-        to_cache[store_key] = result_dict[feature_id]
-    rediscache.set_multi(to_cache)
-
-  result_list = [
-      result_dict[feature_id] for feature_id in feature_ids
-      if feature_id in result_dict]
-  return result_list
+    rediscache.set(cache_key, formatted_features)
+    logging.info('finished storing in cache')
+    formatted_features = filter_confidential_formatted(formatted_features)
+    formatted_features = filter_unpublished_formatted(formatted_features)
+    return formatted_features
 
 
-def get_features_by_impl_status(limit: int | None=None, update_cache: bool=False,
-    show_unlisted: bool=False) -> list[dict]:
-  """Return a list of JSON dicts for features, ordered by chrome_impl_status.
+def get_features_for_l10n_extraction(
+    start_milestone: int, end_milestone: int
+) -> list[dict[str, Any]]:
+    """Fetches and structures enterprise features in a milestone range for l10n extraction."""
+    formatted_features = get_features_in_release_notes(
+        start_milestone, end_milestone=end_milestone
+    )
 
-  Because the cache may rarely have stale data, this should only be
-  used for displaying data read-only, not for populating forms or
-  procesing a POST to edit data.  For editing use case, load the
-  data from NDB directly.
-  """
-  cache_key = '%s|%s|%s|%s' % (FeatureEntry.DEFAULT_CACHE_KEY,
-                                'impl_order', limit, show_unlisted)
+    # Explicitly enforce both content_reviewed and publish_ready for l10n.
+    formatted_features = [
+        f
+        for f in formatted_features
+        if f.get('is_releasenotes_content_reviewed')
+        and f.get('is_releasenotes_publish_ready')
+    ]
 
-  feature_list = rediscache.get(cache_key)
-  logging.info('getting feature list, sorted by chrome_impl_status')
+    # Pick and reformat the response to l10n-friendly format.
+    l10n_features = []
+    for f in formatted_features:
+        stages_list = []
+        for s in f.get('stages', []):
+            if s.get('rollout_details'):
+                stage_item = {
+                    'id': s.get('id'),
+                    'rolloutDetails': s.get('rollout_details'),
+                }
+                stages_list.append(stage_item)
+        item = {
+            'id': f.get('id'),
+            'name': f.get('name'),
+            'summary': f.get('summary'),
+        }
+        if stages_list:
+            item['stages'] = stages_list
+        l10n_features.append(item)
 
-  # On cache miss, do a db query.
-  if not feature_list or update_cache:
-    logging.info('recomputing feature list')
-    # Get features by implementation status.
-    futures: list[Future] = []
-    stages_future = Stage.query(Stage.archived == False).fetch_async()
-    for impl_status in IMPLEMENTATION_STATUS.keys():
-      q = FeatureEntry.query(FeatureEntry.impl_status_chrome == impl_status)
-      q = q.order(FeatureEntry.impl_status_chrome)
-      q = q.order(FeatureEntry.name)
-      futures.append(q.fetch_async(None))
-    # Put "No active development" at end of list.
-    futures = futures[1:] + futures[0:1]
-    logging.info('Waiting on futures')
-    query_results = [future.result() for future in futures]
-    all_stages = stage_helpers.organize_all_stages_by_feature(
-        stages_future.result())
+    return l10n_features
 
-    # Construct the proper ordering.
-    feature_list = []
-    for section in query_results:
-      if len(section) > 0:
-        section = [f for f in section if f.feature_type != FEATURE_TYPE_ENTERPRISE_ID]
-        section = [converters.feature_entry_to_json_basic(
-            f, all_stages[f.key.integer_id()]) for f in section]
-        section[0]['first_of_section'] = True
+
+def get_in_milestone(
+    milestone: int, show_unlisted: bool = False
+) -> dict[str, list[dict[str, Any]]]:
+    """Return {reason: [feature_dict]} with all the reasons a feature can
+    be part of a milestone.
+
+    Because the cache may rarely have stale data, this should only be
+    used for displaying data read-only, not for populating forms or
+    procesing a POST to edit data.  For editing use case, load the
+    data from NDB directly.
+    """  # noqa: D205
+    features_by_type = {}
+    cache_key = '%s|%s|%s' % (
+        FeatureEntry.SEARCH_CACHE_KEY,
+        'milestone',
+        milestone,
+    )
+    cached_features_by_type = rediscache.get(cache_key)
+    if cached_features_by_type:
+        features_by_type = cached_features_by_type
+    else:
+        logging.info(
+            'Getting chronological feature list in milestone %d', milestone
+        )
+        # Start each query asynchronously in parallel.
+
+        # Shipping stages with a matching desktop milestone.
+        # Note: Enterprise features use core_enums.STAGE_ENT_ROLLOUT and are NOT included.
+        q = Stage.query(
+            Stage.milestones.desktop_first == milestone,
+            Stage.archived == False,  # noqa: E712
+            ndb.OR(
+                Stage.stage_type == core_enums.STAGE_BLINK_SHIPPING,
+                Stage.stage_type == core_enums.STAGE_PSA_SHIPPING,
+                Stage.stage_type == core_enums.STAGE_FAST_SHIPPING,
+                Stage.stage_type == core_enums.STAGE_DEP_SHIPPING,
+            ),
+        )
+        q = q.filter()
+        desktop_shipping_future = q.fetch_async()
+
+        # Shipping stages with a matching android shipping milestone
+        # but no desktop milestone.
+        q = Stage.query(
+            Stage.milestones.android_first == milestone,
+            Stage.milestones.desktop_first == None,  # noqa: E711
+            Stage.archived == False,  # noqa: E712
+            Stage.stage_type.IN(
+                (
+                    core_enums.STAGE_BLINK_SHIPPING,
+                    core_enums.STAGE_PSA_SHIPPING,
+                    core_enums.STAGE_FAST_SHIPPING,
+                    core_enums.STAGE_DEP_SHIPPING,
+                )
+            ),
+        )
+        android_only_shipping_future = q.fetch_async()
+
+        # Origin trial stages (Desktop) in this milestone.
+        q = Stage.query(
+            Stage.milestones.desktop_first == milestone,
+            Stage.archived == False,  # noqa: E712
+            Stage.stage_type.IN(
+                (
+                    core_enums.STAGE_BLINK_ORIGIN_TRIAL,
+                    core_enums.STAGE_FAST_ORIGIN_TRIAL,
+                    core_enums.STAGE_DEP_DEPRECATION_TRIAL,
+                )
+            ),
+        )
+        desktop_origin_trial_future = q.fetch_async()
+
+        # Origin trial stages (Android) in this milestone.
+        q = Stage.query(
+            Stage.milestones.android_first == milestone,
+            Stage.milestones.desktop_first == None,  # noqa: E711
+            Stage.archived == False,  # noqa: E712
+            Stage.stage_type.IN(
+                (
+                    core_enums.STAGE_BLINK_ORIGIN_TRIAL,
+                    core_enums.STAGE_FAST_ORIGIN_TRIAL,
+                    core_enums.STAGE_DEP_DEPRECATION_TRIAL,
+                )
+            ),
+        )
+        android_origin_trial_future = q.fetch_async()
+
+        # Origin trial stages (Webview) in this milestone.
+        q = Stage.query(
+            Stage.milestones.webview_first == milestone,
+            Stage.milestones.desktop_first == None,  # noqa: E711
+            Stage.archived == False,  # noqa: E712
+            Stage.stage_type.IN(
+                (
+                    core_enums.STAGE_BLINK_ORIGIN_TRIAL,
+                    core_enums.STAGE_FAST_ORIGIN_TRIAL,
+                    core_enums.STAGE_DEP_DEPRECATION_TRIAL,
+                )
+            ),
+        )
+        webview_origin_trial_future = q.fetch_async()
+
+        # Dev trial stages (Desktop) in this milestone.
+        q = Stage.query(
+            Stage.milestones.desktop_first == milestone,
+            Stage.archived == False,  # noqa: E712
+            Stage.stage_type.IN(
+                (
+                    core_enums.STAGE_BLINK_DEV_TRIAL,
+                    core_enums.STAGE_PSA_DEV_TRIAL,
+                    core_enums.STAGE_FAST_DEV_TRIAL,
+                    core_enums.STAGE_DEP_DEV_TRIAL,
+                )
+            ),
+        )
+        desktop_dev_trial_future = q.fetch_async()
+
+        # Dev trial stages (Android) in this milestone.
+        q = Stage.query(
+            Stage.milestones.android_first == milestone,
+            Stage.milestones.desktop_first == None,  # noqa: E711
+            Stage.archived == False,  # noqa: E712
+            Stage.stage_type.IN(
+                (
+                    core_enums.STAGE_BLINK_DEV_TRIAL,
+                    core_enums.STAGE_PSA_DEV_TRIAL,
+                    core_enums.STAGE_FAST_DEV_TRIAL,
+                    core_enums.STAGE_DEP_DEV_TRIAL,
+                )
+            ),
+        )
+        android_dev_trial_future = q.fetch_async()
+
+        # Rollout stages are mostly used for enterprise features, but some
+        # web platform features may add them.  Enterprise features are
+        # filtered out below.
+        q = Stage.query(
+            Stage.rollout_milestone == milestone,
+            Stage.archived == False,  # noqa: E712
+            Stage.stage_type == core_enums.STAGE_ENT_ROLLOUT,
+        )
+        q = q.filter()
+        rollout_future = q.fetch_async()
+
+        # Wait for all futures to complete and collect unique feature IDs.
+        shipping_stages_by_fid = organize_all_stages_by_feature(
+            desktop_shipping_future.result()
+            + android_only_shipping_future.result()
+        )
+        origin_trial_stages_by_fid = organize_all_stages_by_feature(
+            desktop_origin_trial_future.result()
+            + android_origin_trial_future.result()
+            + webview_origin_trial_future.result()
+        )
+        dev_trial_stages_by_fid = organize_all_stages_by_feature(
+            desktop_dev_trial_future.result()
+            + android_dev_trial_future.result()
+        )
+        rollout_stages_by_fid = organize_all_stages_by_feature(
+            rollout_future.result()
+        )
+
+        # Query for FeatureEntry entities that match the stage feature IDs.
+        shipping_future = get_entries_by_id_async(shipping_stages_by_fid.keys())
+        origin_trial_future = get_entries_by_id_async(
+            origin_trial_stages_by_fid.keys()
+        )
+        dev_trial_future = get_entries_by_id_async(
+            dev_trial_stages_by_fid.keys()
+        )
+        rollout_future = get_entries_by_id_async(rollout_stages_by_fid.keys())
+
+        shipping_features = get_future_results(shipping_future)
+        origin_trial_features = get_future_results(origin_trial_future)
+        dev_trial_features = get_future_results(dev_trial_future)
+        rollout_features = get_future_results(rollout_future)
+
+        all_features = _group_by_roadmap_section(
+            shipping_features,
+            origin_trial_features,
+            dev_trial_features,
+            rollout_features,
+        )
+
+        # Filter out deleted and inactive features, then
+        # construct results as: {type: [json_feature, ...], ...}.
+        for shipping_type in all_features:
+            all_features[shipping_type].sort(key=lambda f: f.name)
+            all_features[shipping_type] = [
+                fe
+                for fe in all_features[shipping_type]
+                if _should_appear_on_roadmap(fe)
+            ]
+            features_by_type[shipping_type] = []
+            for f in all_features[shipping_type]:
+                formatted_feature = converters.feature_entry_to_json_basic(f)
+                features_by_type[shipping_type].append(formatted_feature)
+
+        # Fill in the IDs of the stages that caused each feature to appear,
+        # and any finch URLs.
+        _set_feature_fields_for_roadmap(
+            features_by_type[
+                core_enums.IMPLEMENTATION_STATUS[core_enums.ENABLED_BY_DEFAULT]
+            ]
+            + features_by_type[
+                core_enums.IMPLEMENTATION_STATUS[core_enums.DEPRECATED]
+            ]
+            + features_by_type[
+                core_enums.IMPLEMENTATION_STATUS[core_enums.REMOVED]
+            ],
+            shipping_stages_by_fid,
+        )
+
+        _set_feature_fields_for_roadmap(
+            features_by_type[
+                core_enums.IMPLEMENTATION_STATUS[core_enums.ORIGIN_TRIAL]
+            ],
+            origin_trial_stages_by_fid,
+        )
+
+        _set_feature_fields_for_roadmap(
+            features_by_type[
+                core_enums.IMPLEMENTATION_STATUS[core_enums.BEHIND_A_FLAG]
+            ],
+            dev_trial_stages_by_fid,
+        )
+
+        rediscache.set(cache_key, features_by_type)
+
+    for shipping_type in features_by_type:
         if not show_unlisted:
-          section = filter_unlisted(section)
-        feature_list.extend(section)
+            features_by_type[shipping_type] = filter_unlisted_formatted(
+                features_by_type[shipping_type]
+            )
+        features_by_type[shipping_type] = filter_confidential_formatted(
+            features_by_type[shipping_type]
+        )
 
-    rediscache.set(cache_key, feature_list)
+    return features_by_type
 
-  return feature_list
+
+def _group_by_roadmap_section(
+    shipping_features: list[FeatureEntry],
+    origin_trial_features: list[FeatureEntry],
+    dev_trial_features: list[FeatureEntry],
+    rollout_features: list[FeatureEntry],
+) -> dict[str, list[FeatureEntry]]:
+    """Return a dict of roadmap sections with features belonging in each."""
+    removed_features = []
+    deprecated_features = []
+    enabled_features = []
+
+    # Push features to lists corresponding to the appropriate section
+    # of the milestone card.
+    for fe in shipping_features:
+        if fe.impl_status_chrome == core_enums.REMOVED:
+            removed_features.append(fe)
+        elif fe.feature_type == core_enums.FEATURE_TYPE_DEPRECATION_ID:
+            deprecated_features.append(fe)
+        else:
+            enabled_features.append(fe)
+
+    all_features: dict[str, list[FeatureEntry]] = {
+        core_enums.IMPLEMENTATION_STATUS[
+            core_enums.ENABLED_BY_DEFAULT
+        ]: enabled_features,
+        core_enums.IMPLEMENTATION_STATUS[
+            core_enums.DEPRECATED
+        ]: deprecated_features,
+        core_enums.IMPLEMENTATION_STATUS[core_enums.REMOVED]: removed_features,
+        core_enums.ROLLOUT_SECTION: rollout_features,
+        core_enums.IMPLEMENTATION_STATUS[
+            core_enums.ORIGIN_TRIAL
+        ]: origin_trial_features,
+        core_enums.IMPLEMENTATION_STATUS[
+            core_enums.BEHIND_A_FLAG
+        ]: dev_trial_features,
+    }
+    return all_features
+
+
+def _should_appear_on_roadmap(fe: FeatureEntry) -> bool:
+    """Return True for features that should appear on the roadmap."""
+    return (
+        not fe.deleted
+        and fe.impl_status_chrome not in core_enums.INACTIVE_IMPL_STATUSES
+        and fe.feature_type in core_enums.ROADMAP_FEATURE_TYPES
+    )
+
+
+def _set_feature_fields_for_roadmap(
+    formatted_features: list[dict[str, Any]],
+    triggering_stages_by_fid: dict[int, list[Stage]],
+) -> None:
+    """Add roadmap_stage_ids, origin_trial_id, and finch_urls items to formatted features."""
+    for ff in formatted_features:
+        # The feature's stages that caused it to appear in this roadmap section.
+        feature_trigger_stages = triggering_stages_by_fid.get(ff['id'], [])
+        ff['roadmap_stage_ids'] = [
+            s.key.integer_id() for s in feature_trigger_stages
+        ]  # noqa: E501
+        ot_ids = [
+            s.origin_trial_id
+            for s in feature_trigger_stages
+            if s.origin_trial_id
+        ]
+        if ot_ids:
+            ff['origin_trial_id'] = ot_ids[0]
+        ff['feature_type_int'] = ff['feature_type_int']
+        ff['finch_urls'] = [
+            s.finch_url for s in feature_trigger_stages if s.finch_url
+        ]
+
+
+def get_by_participant(email: str) -> list[ndb.Key]:
+    """Return NDB keys of FeatureEntrys that the user can edit."""
+    CACHE_KEY = '%s|participant|%s' % (FeatureEntry.SEARCH_CACHE_KEY, email)
+    result = rediscache.get(CACHE_KEY)
+
+    if result is None:
+        query = FeatureEntry.query()
+        query = query.filter(
+            FeatureEntry.deleted == False,  # noqa: E712
+            ndb.OR(
+                FeatureEntry.owner_emails == email,
+                FeatureEntry.editor_emails == email,
+                FeatureEntry.creator_email == email,
+                FeatureEntry.spec_mentor_emails == email,
+            ),
+        )
+        result = query.fetch(keys_only=True)
+        rediscache.set(CACHE_KEY, result)
+    return result
+
+
+def get_feature_names_by_ids(
+    feature_ids: list[int], update_cache: bool = True
+) -> list[dict[str, Any]]:
+    """Return a list of JSON dicts for the specified feature names."""  # noqa: D200
+    result_dict = {}
+
+    if update_cache:
+        lookup_keys = [
+            FeatureEntry.feature_cache_key(
+                FeatureEntry.FEATURE_NAME_CACHE_KEY, feature_id
+            )
+            for feature_id in feature_ids
+        ]
+        cached_features = rediscache.get_multi(lookup_keys)
+        if cached_features:
+            result_dict = {
+                f['id']: f
+                for f in cached_features.values()
+                if f is not None and f.get('id')
+            }
+
+    needed_ids = [fid for fid in feature_ids if fid not in result_dict]
+
+    if needed_ids:
+        # Create ndb.Key objects for the batch operation
+        needed_keys = [ndb.Key(FeatureEntry, fid) for fid in needed_ids]
+
+        features_list: list[FeatureEntry | None] = ndb.get_multi(needed_keys)
+
+        for fe in features_list:
+            if fe and not fe.deleted:
+                feature_id = fe.key.integer_id()
+                result_dict[feature_id] = converters.feature_entry_to_json_tiny(
+                    fe
+                )
+
+    if update_cache and needed_ids:
+        to_cache = {}
+        for feature_id in needed_ids:
+            if feature_id in result_dict:
+                store_key = FeatureEntry.feature_cache_key(
+                    FeatureEntry.FEATURE_NAME_CACHE_KEY, feature_id
+                )
+                to_cache[store_key] = result_dict[feature_id]
+        if to_cache:
+            rediscache.set_multi(to_cache)
+
+    result_list = [
+        result_dict[feature_id]
+        for feature_id in feature_ids
+        if feature_id in result_dict
+    ]
+    return filter_confidential_formatted(result_list)
+
+
+def get_by_ids(
+    feature_ids: list[int], update_cache: bool = True
+) -> list[dict[str, Any]]:
+    """Return a list of JSON dicts for the specified features.
+
+    Because the cache may rarely have stale data, this should only be
+    used for displaying data read-only, not for populating forms or
+    procesing a POST to edit data.  For editing use case, load the
+    data from NDB directly.
+    """
+    result_dict = {}
+
+    if update_cache:
+        lookup_keys = [
+            FeatureEntry.feature_cache_key(
+                FeatureEntry.DEFAULT_CACHE_KEY, feature_id
+            )
+            for feature_id in feature_ids
+        ]
+        cached_features = rediscache.get_multi(lookup_keys)
+        if cached_features:
+            result_dict = {
+                f['id']: f
+                for f in cached_features.values()
+                if f is not None and f.get('id')
+            }
+
+    needed_ids = [fid for fid in feature_ids if fid not in result_dict]
+
+    if needed_ids:
+        # Create ndb.Key objects for the batch operation
+        needed_keys = [ndb.Key(FeatureEntry, fid) for fid in needed_ids]
+
+        # Get all features and stages asynchronously.
+        unformatted_features_future: list[ndb.Future] = ndb.get_multi_async(
+            needed_keys
+        )  # noqa: E501
+        stages_futures: list[ndb.Future] = []
+        for f_id in needed_ids:
+            stages_futures.append(
+                Stage.query(
+                    Stage.feature_id == f_id,
+                    Stage.archived == False,  # noqa: E712
+                ).fetch_async()
+            )
+
+        stages_list: list[Stage] = []
+        for stages_future in stages_futures:
+            stages_list.extend(stages_future.get_result())
+        stages_dict = organize_all_stages_by_feature(stages_list)
+
+        unformatted_features = [
+            uf.get_result() for uf in unformatted_features_future
+        ]  # noqa: E501
+        for unformatted_feature in unformatted_features:
+            if unformatted_feature and not unformatted_feature.deleted:
+                feature_id = unformatted_feature.key.integer_id()
+                feature = converters.feature_entry_to_json_verbose(
+                    unformatted_feature,
+                    prefetched_stages=stages_dict.get(feature_id),
+                )
+
+                if unformatted_feature.updated is not None:
+                    feature['updated_display'] = (
+                        unformatted_feature.updated.strftime('%Y-%m-%d')
+                    )
+                else:
+                    feature['updated_display'] = ''
+                result_dict[feature_id] = feature
+
+    if update_cache and needed_ids:
+        to_cache = {}
+        for feature_id in needed_ids:
+            if feature_id in result_dict:
+                store_key = FeatureEntry.feature_cache_key(
+                    FeatureEntry.DEFAULT_CACHE_KEY, feature_id
+                )
+                to_cache[store_key] = result_dict[feature_id]
+        if to_cache:
+            rediscache.set_multi(to_cache)
+
+    result_list = [
+        result_dict[feature_id]
+        for feature_id in feature_ids
+        if feature_id in result_dict
+    ]
+    return filter_confidential_formatted(result_list)
+
+
+def get_features_by_impl_status(
+    limit: int | None = None,
+    update_cache: bool = False,  # noqa: E501
+    show_unlisted: bool = False,
+) -> list[dict]:
+    """Return a list of JSON dicts for features, ordered by chrome_impl_status.
+
+    Because the cache may rarely have stale data, this should only be
+    used for displaying data read-only, not for populating forms or
+    procesing a POST to edit data.  For editing use case, load the
+    data from NDB directly.
+    """
+    cache_key = '%s|%s|%s|%s' % (
+        FeatureEntry.SEARCH_CACHE_KEY,
+        'impl_order',
+        limit,
+        show_unlisted,
+    )
+
+    feature_list = rediscache.get(cache_key)
+    logging.info('getting feature list, sorted by chrome_impl_status')
+
+    # On cache miss, do a db query.
+    if not feature_list or update_cache:
+        logging.info('recomputing feature list')
+        # Get features by implementation status.
+        futures: list[Future] = []
+        stages_future = Stage.query(Stage.archived == False).fetch_async()  # noqa: E712
+        for impl_status in core_enums.IMPLEMENTATION_STATUS.keys():
+            q = FeatureEntry.query(
+                FeatureEntry.impl_status_chrome == impl_status
+            )
+            q = q.order(FeatureEntry.impl_status_chrome)
+            q = q.order(FeatureEntry.name)
+            futures.append(q.fetch_async(None))
+        # Put "No active development" at end of list.
+        futures = futures[1:] + futures[0:1]
+        logging.info('Waiting on futures')
+        query_results = [future.result() for future in futures]
+        all_stages = organize_all_stages_by_feature(stages_future.result())
+
+        # Construct the proper ordering.
+        feature_list = []
+        for section in query_results:
+            if len(section) > 0:
+                section = [f for f in section if not f.deleted]
+                section = [
+                    f
+                    for f in section
+                    if f.feature_type != core_enums.FEATURE_TYPE_ENTERPRISE_ID
+                ]  # noqa: E501, F405
+                section = [
+                    converters.feature_entry_to_json_basic(
+                        f, all_stages[f.key.integer_id()]
+                    )
+                    for f in section
+                ]
+                section[0]['first_of_section'] = True
+                if not show_unlisted:
+                    section = filter_unlisted_formatted(section)
+                feature_list.extend(section)
+
+        rediscache.set(cache_key, feature_list)
+
+    return filter_confidential_formatted(feature_list)
+
+
+def _map_relevant_milestones(
+    feature_keys: list[ndb.Key],
+    mstones_by_feature_id: dict[int, tuple[int, str]],
+    stages: list[Stage],
+    milestone_fields: list[str],
+    min_mstone: int,
+):
+    for s in stages:
+        if s.feature_id not in mstones_by_feature_id:
+            feature_keys.append(ndb.Key('FeatureEntry', s.feature_id))
+        min_milestone = None
+        milestone_field = None
+        for field in milestone_fields:
+            milestones = s.milestones
+            m: int | None = (
+                None
+                if milestones is None
+                else getattr(
+                    milestones, MilestoneSet.MILESTONE_FIELD_MAPPING[field]
+                )
+            )
+            if m is not None and m >= min_mstone and m <= min_mstone + 2:
+                if min_milestone is None or m < min_milestone:
+                    min_milestone = m
+                    milestone_field = field
+        if min_milestone is not None and milestone_field is not None:
+            mstones_by_feature_id[s.feature_id] = (
+                min_milestone,
+                milestone_field,
+            )
+
+
+def get_stale_features() -> list[tuple[FeatureEntry, int, str]]:
+    """Retrieves features that are stale based on their milestone timeline."""
+    current_milestone_info = get_current_milestone_info('current')
+
+    min_mstone = int(current_milestone_info['mstone'])
+    mstone_range = (min_mstone, min_mstone + 1, min_mstone + 2)
+    relevant_ship_stages_future = Stage.query(
+        Stage.stage_type.IN(
+            [st for st in core_enums.STAGE_TYPES_SHIPPING.values() if st]
+        ),
+        ndb.OR(
+            Stage.milestones.desktop_first.IN(mstone_range),
+            Stage.milestones.android_first.IN(mstone_range),
+            Stage.milestones.ios_first.IN(mstone_range),
+            Stage.milestones.webview_first.IN(mstone_range),
+        ),
+    ).fetch_async()
+    relevant_enterprise_stages_future = Stage.query(
+        Stage.stage_type == core_enums.STAGE_ENT_ROLLOUT,
+        Stage.milestones.desktop_first.IN(mstone_range),
+    ).fetch_async()
+
+    relevant_ship_stages: list[Stage] = relevant_ship_stages_future.get_result()
+    relevant_ent_stages: list[Stage] = (
+        relevant_enterprise_stages_future.get_result()
+    )  # noqa: E501
+
+    ship_milestone_fields = [
+        'shipped_android_milestone',
+        'shipped_ios_milestone',
+        'shipped_milestone',
+        'shipped_webview_milestone',
+    ]
+
+    ent_milestone_fields = ['rollout_milestone']
+
+    feature_keys: list[ndb.Key] = []
+    mstones_by_feature_id: dict[int, tuple[int, str]] = {}
+
+    _map_relevant_milestones(
+        feature_keys,
+        mstones_by_feature_id,
+        relevant_ship_stages,
+        ship_milestone_fields,
+        min_mstone,
+    )
+    _map_relevant_milestones(
+        feature_keys,
+        mstones_by_feature_id,
+        relevant_ent_stages,
+        ent_milestone_fields,
+        min_mstone,
+    )
+
+    relevant_features: list[FeatureEntry] = ndb.get_multi(feature_keys)
+    relevant_features = filter_confidential(relevant_features)
+    relevant_features = filter_unlisted(relevant_features)
+    now = datetime.now()
+
+    return [
+        (
+            f,
+            mstones_by_feature_id[f.key.integer_id()][0],
+            mstones_by_feature_id[f.key.integer_id()][1],
+        )
+        for f in relevant_features
+        if (
+            f.accurate_as_of
+            and f.accurate_as_of + timedelta(weeks=4) < now
+            and not f.deleted
+            and f.outstanding_notifications > 0
+        )
+    ]
+
+
+def validate_feature_in_chromium(
+    name: str, enabled_features_json: dict | None, content_features_file: str
+) -> list[Criteria]:
+    """Verify required info exists in Chromium files. Return a list of missing criteria."""  # noqa: E501
+    criteria_missing: list[Criteria] = []
+    if enabled_features_json is None:
+        return criteria_missing
+
+    feature_found = False
+
+    # Check enabled_features_json
+    feature_info = next(
+        (
+            finfo
+            for finfo in enabled_features_json['data']
+            if finfo['name'] == name
+        ),
+        None,
+    )
+
+    if feature_info:
+        feature_found = True
+        # Check if status is stable (can be a string or a dict of platforms)
+        status = feature_info.get('status', None)
+        if isinstance(status, dict):
+            if not any(s for s in status.values() if s == 'stable'):
+                criteria_missing.append(Criteria.RUNTIME_FEATURE_NOT_STABLE)
+        elif status != 'stable':
+            criteria_missing.append(Criteria.RUNTIME_FEATURE_NOT_STABLE)
+
+    else:
+        # Check content_features_file
+        pattern = re.compile(
+            rf'BASE_FEATURE\(\s*k{name}\s*,'
+            r'(?:(?:\s|//.*))*'
+            r'base::FEATURE_(\w+)_BY_DEFAULT'
+            r'\s*\);',
+            re.MULTILINE,
+        )
+        match = re.search(pattern, content_features_file)
+        if match:
+            feature_found = True
+            if match.group(1) != 'ENABLED':
+                criteria_missing.append(Criteria.CONTENT_FEATURE_NOT_ENABLED)
+
+    if not feature_found:
+        criteria_missing.append(Criteria.CHROMIUM_FEATURE_NOT_FOUND)
+
+    return criteria_missing
+
+
+def build_feature_info(
+    feature: FeatureEntry, stage: Stage
+) -> ShippingFeatureInfo:  # noqa: E501
+    """Constructs the dictionary representation of a shipping feature."""
+    chromestatus_url = f'{settings.SITE_URL}feature/{feature.key.integer_id()}'
+    return {
+        'name': feature.name,
+        'id': feature.key.integer_id(),
+        'chromestatus_url': chromestatus_url,
+        'tracking_bug_url': feature.bug_url,
+        'launch_bug_url': feature.launch_bug_url,
+        'finch_name': feature.finch_name,
+        'non_finch_justification': feature.non_finch_justification,
+        'owner_emails': feature.owner_emails,
+        'intent_to_ship': stage.intent_thread_url,
+    }
+
+
+def validate_shipping_criteria(
+    feature: FeatureEntry,
+    stage: Stage,
+    enabled_features_json: dict | None,
+    content_features_file: str,
+) -> list[Criteria]:
+    """Checks a feature against shipping requirements (Gates, Intents, Finch, Code)."""  # noqa: E501
+    criteria_missing: list[Criteria] = []
+
+    # Skip the Chromium code checks if it is associated with any of the Blink
+    # components that are difficult to detect in the codebase.
+    skip_chromium_code_checks = bool(
+        set(BLINK_COMPONENTS_SKIP_CHROMIUM_CHECKS)
+        & set(feature.blink_components)
+    )
+
+    # Check Intent to Ship
+    if not stage.intent_thread_url:
+        criteria_missing.append(Criteria.INTENT_TO_SHIP_MISSING)
+
+    # Check API Owner Gate
+    api_owner_gate: Gate | None = Gate.query(
+        Gate.stage_id == stage.key.integer_id(),
+        Gate.gate_type == core_enums.GATE_API_SHIP,
+    ).get()
+
+    if api_owner_gate is None or api_owner_gate.state != Vote.APPROVED:
+        criteria_missing.append(Criteria.API_OWNER_LGTMS_MISSING)
+
+    # Check Finch / Non-Finch Justification
+    if not feature.finch_name and not feature.non_finch_justification:
+        criteria_missing.append(Criteria.FINCH_NAME_MISSING)
+
+    # Check Chromium Internal Status (if finch name is present)
+    if feature.finch_name and not skip_chromium_code_checks:
+        criteria_missing.extend(
+            validate_feature_in_chromium(
+                feature.finch_name, enabled_features_json, content_features_file
+            )
+        )
+
+    return criteria_missing
+
+
+def aggregate_shipping_features(
+    shipping_stages: list[Stage],
+    enabled_features_json: dict | None,
+    content_features_file: str,
+) -> tuple[
+    list[ShippingFeatureInfo], list[tuple[ShippingFeatureInfo, list[str]]]
+]:  # noqa: E501
+    """Aggregates and validates features based on shipping stages and chromium files."""  # noqa: E501
+    complete_features: list[ShippingFeatureInfo] = []
+    incomplete_features: list[tuple[ShippingFeatureInfo, list[str]]] = []
+
+    for stage in shipping_stages:
+        fe = FeatureEntry.get_by_id(stage.feature_id)
+        if fe is None:
+            logging.warning(f'Feature {stage.feature_id} not found.')
+            continue
+
+        # WP feature entries cannot be confidential, so this should not matter.
+        # But, if they ever did exist, we exclude them from the report because
+        # the user is not authenticated.
+        if fe.confidential or fe.deleted or stage.archived:
+            continue
+
+        feature_info = build_feature_info(fe, stage)
+
+        # PSA features do not require strict validation
+        if fe.feature_type == core_enums.FEATURE_TYPE_CODE_CHANGE_ID:
+            complete_features.append(feature_info)
+            continue
+
+        # Perform strict validation
+        criteria_missing = validate_shipping_criteria(
+            fe, stage, enabled_features_json, content_features_file
+        )
+
+        if criteria_missing:
+            incomplete_features.append(
+                (feature_info, [c.value for c in criteria_missing])
+            )  # noqa: E501
+        else:
+            complete_features.append(feature_info)
+
+    return complete_features, incomplete_features

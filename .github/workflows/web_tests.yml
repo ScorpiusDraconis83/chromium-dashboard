@@ -1,43 +1,41 @@
 name: Continuous Integration Web Tests
-# Needed for gcloud because as of Nov 2022, gcloud only supports python 3.5-3.9
-# https://cloud.google.com/sdk/docs/install#supported_python_versions
-# https://github.com/google-github-actions/setup-gcloud/issues/381#issuecomment-955631107
-# ubuntu-20.04 comes with python3.8. As a result, we can tell gcloud to use that.
 env:
- CLOUDSDK_PYTHON: python3.8
+ CLOUDSDK_PYTHON: python3.13
 on:
-  push:
-    branches:
-      - main
   pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
 
 jobs:
   web_tests:
-    # Need to use 20.04 because ubuntu-latest uses ubuntu-22.04.
-    # 22.04 comes with python 3.10 and that does not work with gcloud.
-    # https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners
-    # Refer to CLOUDSDK_PYTHON above for more details.
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        node-version: [18.x]
+        node-version: [24.x]
         # TODO: Add 14.x, 16.x.
         # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
       - name: set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: pre-installation
         run: |
@@ -53,11 +51,11 @@ jobs:
 
       - name: installation
         run: |
-          npm install -g gulp
-
-      - run: npm config set script-shell bash --global
-      - run: npm run setup
-      - run: npm run build --if-present
+          npm config set script-shell bash --global
+      - run: make setup
+      - name: Install playwright browsers
+        run: npx playwright install --with-deps
+      - run: make build
 
       - name: Run web test runner
-        run: npm run webtest
+        run: make webtest

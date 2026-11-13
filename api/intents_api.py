@@ -1,0 +1,179 @@
+# Copyright 2024 Google Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License")
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""API handlers for generating Intent to Ship/Prototype/Experiment email drafts."""
+
+from typing import TypedDict
+
+from chromestatus_openapi.models import (
+    GetIntentResponse,
+    MessageResponse,
+    PostIntentRequest,
+)
+from flask import Response, render_template
+
+import settings
+from api import converters
+from framework import basehandlers, cloud_tasks_helpers, permissions
+from internals import core_enums, stage_helpers
+from internals.review_models import Gate
+
+SUBJECT_PREFIXES = {
+    core_enums.IntentDraftType.PROTOTYPE: 'Intent to Prototype',
+    core_enums.IntentDraftType.DEVELOPER_TESTING: 'Ready for Developer Testing',
+    core_enums.IntentDraftType.EXPERIMENT: 'Intent to Experiment',
+    core_enums.IntentDraftType.EXTEND_EXPERIMENT: 'Intent to Extend Experiment',
+    core_enums.IntentDraftType.PSA: 'Web-Facing Change PSA',
+    core_enums.IntentDraftType.DEPRECATE: 'Intent to Deprecate and Remove',
+    core_enums.IntentDraftType.SHIP: 'Intent to Ship',
+}
+
+
+def compute_subject_prefix(
+    feature_type: int, intent_type: core_enums.IntentDraftType
+):
+    """Compute the subject line prefix for an intent email based on the feature and intent type."""  # noqa: E501
+    # Deprecation-specific intent names.
+    if feature_type == core_enums.FEATURE_TYPE_DEPRECATION_ID:
+        if intent_type == core_enums.IntentDraftType.EXPERIMENT:
+            return 'Request for Deprecation Trial'
+        if intent_type == core_enums.IntentDraftType.EXTEND_EXPERIMENT:
+            return 'Intent to Extend Deprecation Trial'
+
+    return SUBJECT_PREFIXES.get(intent_type, 'Unknown Intent Type')
+
+
+# Format for Google Cloud Task body passed to cloud_tasks_helpers.enqueue_task
+class IntentGenerationOptions(TypedDict):
+    """Options for generating an intent."""
+
+    subject: str
+    feature_id: int
+    intent_type: str
+    default_url: str
+    intent_cc_emails: list[str]
+
+
+class IntentsAPI(basehandlers.APIHandler):
+    """API to manage intents for features."""
+
+    def do_get(self, **kwargs) -> Response | dict | str:
+        """Get the body of a draft intent."""
+        fe, stage = self.get_specified_feature_and_stage(**kwargs)
+        feature_id = fe.key.integer_id()
+        stage_id = stage.key.integer_id()
+
+        intent_type = None
+        if stage.stage_type in core_enums.INTENT_DRAFT_TYPES_BY_STAGE_TYPE:
+            intent_type = core_enums.INTENT_DRAFT_TYPES_BY_STAGE_TYPE[
+                stage.stage_type
+            ]
+        if intent_type is None:
+            self.abort(
+                400,
+                msg=f'Stage type {stage.stage_type} does not support intent drafting',
+            )
+
+        gate_id = int(kwargs.get('gate_id', 0))
+        if gate_id:
+            gate: Gate | None = Gate.get_by_id(gate_id)
+            if not gate:
+                self.abort(400, msg='Invalid Gate ID')
+            elif gate.stage_id != stage_id:
+                self.abort(400, msg='Given gate does not belong to stage')
+
+        # Check that the user has feature edit permissions.
+        redirect_resp = permissions.validate_feature_edit_permission(self, fe)
+        if redirect_resp:
+            return redirect_resp
+
+        stage_info = stage_helpers.get_stage_info_for_templates(fe)
+        default_url = (
+            f'{self.request.scheme}://{self.request.host}/feature/{feature_id}'
+        )
+        if gate_id:
+            default_url += f'?gate={gate_id}'
+
+        template_data = {
+            'feature': converters.feature_entry_to_json_verbose(fe),
+            'stage_info': stage_helpers.get_stage_info_for_templates(fe),
+            'should_render_mstone_table': stage_info[
+                'should_render_mstone_table'
+            ],
+            'should_render_intents': stage_info['should_render_intents'],
+            'intent_type': intent_type.value,
+            'default_url': default_url,
+            'APP_TITLE': settings.APP_TITLE,
+        }
+        return GetIntentResponse(
+            subject=(
+                f'{compute_subject_prefix(fe.feature_type, intent_type)}: '
+                f'{fe.name}'
+            ),
+            email_body=render_template(
+                'blink/intent_to_implement.html', **template_data
+            ),
+        ).to_dict()
+
+    def do_post(self, **kwargs) -> Response | dict | MessageResponse:
+        """Submit an intent email directly to blink-dev."""
+        fe, stage = self.get_specified_feature_and_stage(**kwargs)
+        feature_id = fe.key.integer_id()
+
+        intent_type = None
+        if stage.stage_type in core_enums.INTENT_DRAFT_TYPES_BY_STAGE_TYPE:
+            intent_type = core_enums.INTENT_DRAFT_TYPES_BY_STAGE_TYPE[
+                stage.stage_type
+            ]
+        if intent_type is None:
+            self.abort(
+                400,
+                msg=f'Stage type {stage.stage_type} does not support intent drafting',
+            )
+
+        # Check that the user has feature edit permissions.
+        redirect_resp = permissions.validate_feature_edit_permission(self, fe)
+        if redirect_resp:
+            return redirect_resp
+
+        parsed_args = PostIntentRequest(**self.request.get_json())
+        default_url = (
+            f'{self.request.scheme}://{self.request.host}/feature/{feature_id}'
+        )
+
+        # Add gate to Chromestatus URL query string if it is found.
+        gate: Gate | None = None
+        if parsed_args.gate_id:
+            gate = Gate.get_by_id(parsed_args.gate_id)
+        if gate:
+            default_url += f'?gate={parsed_args.gate_id}'
+
+        subject = (
+            f'{compute_subject_prefix(fe.feature_type, intent_type)}: {fe.name}'  # noqa: E501
+        )
+        cc_emails = parsed_args.intent_cc_emails or []
+        # Make sure emails are not empty and are unique.
+        cc_emails = sorted(list(set([email for email in cc_emails if email])))
+        params: IntentGenerationOptions = {
+            'subject': subject,
+            'feature_id': feature_id,
+            'intent_type': intent_type.value,
+            'default_url': default_url,
+            'intent_cc_emails': cc_emails,
+        }
+
+        cloud_tasks_helpers.enqueue_task(
+            '/tasks/email-intent-to-blink-dev', params
+        )
+        return {'message': 'Email task submitted successfully.'}

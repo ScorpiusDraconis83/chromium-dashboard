@@ -1,3 +1,19 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import {css} from 'lit';
 import {SHARED_STYLES} from '../shared-css.js';
 
@@ -31,27 +47,14 @@ export const ROADMAP_MILESTONE_CARD_CSS = [
       counter-reset: featurecount;
       margin: 8px;
     }
-    iron-icon {
-      --iron-icon-height: 18px;
-      --iron-icon-width: 18px;
+    sl-icon {
+      font-size: 1.4rem;
       color: #366597;
     }
-    iron-icon:hover.android {
-      color: #a4c739;
+    sl-icon:hover {
+      color: #248;
     }
-    iron-icon:hover.remove {
-      color: var(--paper-red-700);
-    }
-    iron-icon:hover.deprecated {
-      color: var(--paper-orange-700);
-    }
-    iron-icon:hover.experimental {
-      color: var(--paper-green-700);
-    }
-    iron-icon:hover.intervention {
-      color: var(--paper-yellow-800);
-    }
-    iron-icon.pushicon {
+    sl-icon.pushicon {
       cursor: pointer;
     }
     sl-icon-button {
@@ -109,7 +112,7 @@ export const ROADMAP_MILESTONE_CARD_CSS = [
       font-size: 10px;
       font-weight: bold;
       color: white;
-      background: var(--md-gray-900-alpha);
+      background: var(--sl-color-neutral-900);
     }
     .release {
       padding: 16px;
@@ -149,19 +152,14 @@ export const ROADMAP_MILESTONE_CARD_CSS = [
     .features_list ol {
       margin-top: 8px;
       list-style: none;
+      padding: 0;
     }
     .features_list li {
       padding: 8px;
       font-weight: 500;
-      display: flex;
-      justify-content: space-between;
     }
     .features_list li .icon_row {
       flex-shrink: 0;
-    }
-    .features_list li > :first-child {
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
     .features_list .features_header {
       font-weight: 500;
@@ -195,6 +193,12 @@ export const ROADMAP_MILESTONE_CARD_CSS = [
     .features_list sl-skeleton {
       height: 20px;
       margin: 8px;
+    }
+    .experiment {
+      font-size: 85%;
+      padding: 2px 8px;
+      background: #fea;
+      border-radius: 8px;
     }
   `,
 ];

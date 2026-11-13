@@ -1,0 +1,360 @@
+# Copyright 2025 Google Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License")
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for the review gate self-certification logic."""
+
+import testing_config  # isort: split
+
+from unittest import mock
+
+from chromestatus_openapi.models import SurveyAnswers as OASurveyAnswers
+
+from internals import core_enums, self_certify
+from internals.core_models import FeatureEntry
+from internals.review_models import Gate, SurveyAnswers
+
+
+class SelfCertifyFunctionTest(testing_config.CustomTestCase):
+    """Tests for self-certification functions."""
+
+    def test_update_survey_answers__no_existing_answers(self):
+        """If a gate has no existing answers, we create a blank set."""
+        gate = Gate()
+        self.assertIsNone(gate.survey_answers)
+
+        self_certify.update_survey_answers(
+            gate,
+            OASurveyAnswers(
+                is_language_polyfill=True,
+                is_api_polyfill=None,
+                is_same_origin_css=None,
+                adoption_fields_up_to_date=True,
+                launch_or_contact=None,
+            ),
+        )
+
+        self.assertIsNotNone(gate.survey_answers)
+        self.assertTrue(gate.survey_answers.is_language_polyfill)
+        self.assertFalse(gate.survey_answers.is_api_polyfill)
+        self.assertFalse(gate.survey_answers.is_same_origin_css)
+        self.assertTrue(gate.survey_answers.adoption_fields_up_to_date)
+        self.assertFalse(gate.survey_answers.adoption_style_aligned)
+        self.assertIsNone(gate.survey_answers.launch_or_contact)
+
+    def test_update_survey_answers__has_existing_answers(self):
+        """If a gate has existing answers, we just update it."""
+        gate = Gate(survey_answers=SurveyAnswers(is_language_polyfill=True))
+
+        self_certify.update_survey_answers(
+            gate,
+            OASurveyAnswers(
+                is_language_polyfill=None,
+                is_api_polyfill=False,
+                is_same_origin_css=None,
+                launch_or_contact=None,
+            ),
+        )
+
+        self.assertIsNotNone(gate.survey_answers)
+        self.assertTrue(gate.survey_answers.is_language_polyfill)
+        self.assertFalse(gate.survey_answers.is_api_polyfill)
+        self.assertFalse(gate.survey_answers.is_same_origin_css)
+        self.assertIsNone(gate.survey_answers.launch_or_contact)
+
+    def test_is_privacy_eligible(self):
+        """Privacy is eligible if any of the booleans is True."""
+        self.assertFalse(self_certify.is_privacy_eligible(SurveyAnswers()))
+        self.assertFalse(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(is_language_polyfill=False)
+            )
+        )
+        self.assertFalse(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(is_api_polyfill=False)
+            )
+        )
+        self.assertFalse(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(is_same_origin_css=False)
+            )
+        )
+        self.assertFalse(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(
+                    is_language_polyfill=False,
+                    is_api_polyfill=False,
+                    is_same_origin_css=False,
+                )
+            )
+        )
+        self.assertFalse(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(is_language_polyfill=True)
+            )
+        )  # No explanation
+        self.assertFalse(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(explanation='Nothing was checked off.')
+            )
+        )
+
+        self.assertTrue(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(
+                    is_language_polyfill=True, explanation='something'
+                )
+            )
+        )
+        self.assertTrue(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(is_api_polyfill=True, explanation='something')
+            )
+        )
+        self.assertTrue(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(is_same_origin_css=True, explanation='something')
+            )
+        )
+        self.assertTrue(
+            self_certify.is_privacy_eligible(
+                SurveyAnswers(
+                    is_language_polyfill=False,
+                    is_api_polyfill=False,
+                    is_same_origin_css=True,
+                    explanation='something',
+                )
+            )
+        )
+
+    def test_is_adoption_eligible(self):
+        """Adoption is eligible if required booleans are True."""
+        self.assertFalse(self_certify.is_adoption_eligible(SurveyAnswers()))
+        self.assertFalse(
+            self_certify.is_adoption_eligible(
+                SurveyAnswers(adoption_style_aligned=False)
+            )
+        )
+        all_five = SurveyAnswers(
+            adoption_fields_up_to_date=True,
+            adoption_style_aligned=True,
+            adoption_lead_time=True,
+            adoption_mdn_drafted=True,
+            adoption_mwg_drafted=True,
+        )
+        first_four_only = SurveyAnswers(
+            adoption_fields_up_to_date=True,
+            adoption_style_aligned=True,
+            adoption_lead_time=True,
+            adoption_mdn_drafted=True,
+            adoption_mwg_drafted=False,
+        )
+        # Without feature (or None), all 5 are required.
+        self.assertTrue(self_certify.is_adoption_eligible(all_five))
+        self.assertFalse(self_certify.is_adoption_eligible(first_four_only))
+
+        feature_incubate = FeatureEntry(
+            feature_type=core_enums.FEATURE_TYPE_INCUBATE_ID
+        )
+        feature_code_change = FeatureEntry(
+            feature_type=core_enums.FEATURE_TYPE_CODE_CHANGE_ID
+        )
+
+        # For normal feature types, MWG is required.
+        self.assertTrue(
+            self_certify.is_adoption_eligible(
+                all_five,
+                feature=feature_incubate,
+            )
+        )
+        self.assertFalse(
+            self_certify.is_adoption_eligible(
+                first_four_only,
+                feature=feature_incubate,
+            )
+        )
+
+        # For code change features, MWG is NOT required.
+        self.assertTrue(
+            self_certify.is_adoption_eligible(
+                first_four_only,
+                feature=feature_code_change,
+            )
+        )
+        self.assertTrue(
+            self_certify.is_adoption_eligible(
+                all_five,
+                feature=feature_code_change,
+            )
+        )
+        # But other 4 fields are still required for code change features.
+        self.assertFalse(
+            self_certify.is_adoption_eligible(
+                SurveyAnswers(
+                    adoption_fields_up_to_date=False,
+                    adoption_style_aligned=True,
+                    adoption_lead_time=True,
+                    adoption_mdn_drafted=True,
+                    adoption_mwg_drafted=False,
+                ),
+                feature=feature_code_change,
+            )
+        )
+
+    def test_is_eligible(self):
+        """Various gates are eligible if they have the right survey answers."""
+        self.assertFalse(
+            self_certify.is_eligible(
+                Gate(
+                    gate_type=core_enums.GATE_PRIVACY_ORIGIN_TRIAL,
+                    survey_answers=SurveyAnswers(is_language_polyfill=True),
+                )
+            )
+        )
+
+        self.assertTrue(
+            self_certify.is_eligible(
+                Gate(
+                    gate_type=core_enums.GATE_PRIVACY_ORIGIN_TRIAL,
+                    survey_answers=SurveyAnswers(
+                        is_language_polyfill=True, explanation='something'
+                    ),
+                )
+            )
+        )
+
+        self.assertTrue(
+            self_certify.is_eligible(
+                Gate(
+                    gate_type=core_enums.GATE_ADOPTION_SHIP,
+                    survey_answers=SurveyAnswers(
+                        adoption_fields_up_to_date=True,
+                        adoption_style_aligned=True,
+                        adoption_lead_time=True,
+                        adoption_mdn_drafted=True,
+                        adoption_mwg_drafted=True,
+                    ),
+                )
+            )
+        )
+
+        feature_code_change = FeatureEntry(
+            feature_type=core_enums.FEATURE_TYPE_CODE_CHANGE_ID
+        )
+        feature_incubate = FeatureEntry(
+            feature_type=core_enums.FEATURE_TYPE_INCUBATE_ID
+        )
+
+        # Code change features allow self-certifying adoption gate without mwg drafted.
+        adoption_gate = Gate(
+            gate_type=core_enums.GATE_ADOPTION_SHIP,
+            survey_answers=SurveyAnswers(
+                adoption_fields_up_to_date=True,
+                adoption_style_aligned=True,
+                adoption_lead_time=True,
+                adoption_mdn_drafted=True,
+                adoption_mwg_drafted=False,
+            ),
+        )
+        self.assertTrue(
+            self_certify.is_eligible(
+                adoption_gate,
+                feature=feature_code_change,
+            )
+        )
+        self.assertFalse(
+            self_certify.is_eligible(
+                adoption_gate,
+                feature=feature_incubate,
+            )
+        )
+
+        # Also works for GATE_ADOPTION_PLAN.
+        adoption_plan_gate = Gate(
+            gate_type=core_enums.GATE_ADOPTION_PLAN,
+            survey_answers=SurveyAnswers(
+                adoption_fields_up_to_date=True,
+                adoption_style_aligned=True,
+                adoption_lead_time=True,
+                adoption_mdn_drafted=True,
+                adoption_mwg_drafted=False,
+            ),
+        )
+        self.assertTrue(
+            self_certify.is_eligible(
+                adoption_plan_gate,
+                feature=feature_code_change,
+            )
+        )
+
+        # If gate has feature_id and neither feature nor feature_type is passed,
+        # it fetches the FeatureEntry by id.
+        gate_with_fid = Gate(
+            feature_id=123,
+            gate_type=core_enums.GATE_ADOPTION_SHIP,
+            survey_answers=SurveyAnswers(
+                adoption_fields_up_to_date=True,
+                adoption_style_aligned=True,
+                adoption_lead_time=True,
+                adoption_mdn_drafted=True,
+                adoption_mwg_drafted=False,
+            ),
+        )
+        with mock.patch(
+            'internals.core_models.FeatureEntry.get_by_id'
+        ) as mock_get_by_id:
+            mock_get_by_id.return_value = FeatureEntry(
+                feature_type=core_enums.FEATURE_TYPE_CODE_CHANGE_ID
+            )
+            self.assertTrue(self_certify.is_eligible(gate_with_fid))
+            mock_get_by_id.assert_called_once_with(123)
+
+        with mock.patch(
+            'internals.core_models.FeatureEntry.get_by_id'
+        ) as mock_get_by_id:
+            mock_get_by_id.return_value = FeatureEntry(
+                feature_type=core_enums.FEATURE_TYPE_INCUBATE_ID
+            )
+            self.assertFalse(self_certify.is_eligible(gate_with_fid))
+
+        self.assertFalse(
+            self_certify.is_eligible(
+                Gate(
+                    gate_type=core_enums.GATE_PRIVACY_ORIGIN_TRIAL,
+                    survey_answers=SurveyAnswers(),
+                )
+            )
+        )
+
+        self.assertFalse(
+            self_certify.is_eligible(
+                Gate(
+                    gate_type=core_enums.GATE_PRIVACY_ORIGIN_TRIAL,
+                    survey_answers=SurveyAnswers(
+                        explanation='Nothing was checked off'
+                    ),
+                )
+            )
+        )
+
+        self.assertFalse(
+            self_certify.is_eligible(
+                Gate(
+                    gate_type=core_enums.GATE_ENTERPRISE_SHIP,
+                    survey_answers=SurveyAnswers(
+                        is_language_polyfill=True, explanation='something'
+                    ),
+                )
+            )
+        )

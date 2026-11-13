@@ -13,22 +13,70 @@ info:
 servers:
 - url: /api/v0
 paths:
+  /accounts:
+    post:
+      operationId: create_account
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+          description: Account created successfully
+        "400":
+          description: Bad request or user already exists
+      summary: Create a new account
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /accounts/{account_id}:
+    delete:
+      operationId: delete_account
+      parameters:
+      - description: ID of the account to delete
+        explode: false
+        in: path
+        name: account_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/deleteAccount_200_response'
+          description: Account deleted successfully
+        "400":
+          description: Bad request
+        "404":
+          description: Account not found
+      summary: Delete an account
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
   /components/{componentId}/users/{userId}:
     delete:
       operationId: remove_user_from_component
       parameters:
       - description: Component ID
+        explode: false
         in: path
         name: componentId
         required: true
         schema:
           type: integer
+        style: simple
       - description: User ID
+        explode: false
         in: path
         name: userId
         required: true
         schema:
           type: integer
+        style: simple
       requestBody:
         content:
           application/json:
@@ -37,23 +85,29 @@ paths:
       responses:
         "200":
           description: Success
+      security:
+      - XsrfToken: []
       summary: Remove a user from a component
       x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
     put:
       operationId: add_user_to_component
       parameters:
       - description: Component ID
+        explode: false
         in: path
         name: componentId
         required: true
         schema:
           type: integer
+        style: simple
       - description: User ID
+        explode: false
         in: path
         name: userId
         required: true
         schema:
           type: integer
+        style: simple
       requestBody:
         content:
           application/json:
@@ -62,6 +116,8 @@ paths:
       responses:
         "200":
           description: Success
+      security:
+      - XsrfToken: []
       summary: Add a user to a component
       x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
   /componentsusers:
@@ -75,10 +131,2898 @@ paths:
                 $ref: '#/components/schemas/ComponentsUsersResponse'
           description: List of all the potential users and components with existing
             subscribers and owners.
+      security:
+      - XsrfToken: []
       summary: List all components and possible users
       x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /currentuser/cues:
+    get:
+      operationId: get_dismissed_cues
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  type: string
+                type: array
+          description: List of dismissed cue cards
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/getDismissedCues_400_response'
+          description: Invalid cue provided
+      summary: Get dismissed cues for the current user
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: dismiss_cue
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DismissCueRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Cue dismissed successfully
+      summary: Dismiss a cue card for the signed-in user
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /currentuser/permissions:
+    get:
+      operationId: get_user_permissions
+      parameters:
+      - description: "If true, return the permissions of the paired user."
+        explode: true
+        in: query
+        name: returnPairedUser
+        required: false
+        schema:
+          type: boolean
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionsResponse'
+          description: The permissions and email of the user.
+      summary: Get the permissions and email of the user
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /currentuser/settings:
+    get:
+      operationId: get_user_settings
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetSettingsResponse'
+          description: Successfuly retrieved user settings
+        "404":
+          description: User preference not found
+      summary: Get user settings
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: set_user_settings
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostSettingsRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Settings updated successfully
+        "403":
+          description: User not signed-in
+      summary: Set the user settings (currently only the notify_as_starrer)
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /currentuser/stars:
+    get:
+      operationId: get_stars
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/GetStarsResponse'
+                type: array
+          description: List of starred feature IDs
+      summary: Get a list of all starred feature IDs for the signed-in user
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: set_star
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/setStar_request'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Star set or cleared successfully
+      summary: Set or clear a star on the specified feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /currentuser/token:
+    post:
+      operationId: refresh_token
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ReviewLatency'
+                type: array
+          description: Successfully refreshed the token.
+      summary: Refresh the XSRF token
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /external_reviews/{review_group}:
+    get:
+      operationId: list_external_reviews
+      parameters:
+      - description: |
+          Which review group to focus on:
+           * `tag` - The W3C TAG
+           * `gecko` - The rendering engine that powers Mozilla Firefox
+           * `webkit` - The rendering engine that powers Apple Safari
+        explode: false
+        in: path
+        name: review_group
+        required: true
+        schema:
+          enum:
+          - tag
+          - gecko
+          - webkit
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalReviewsResponse'
+          description: "List of all the outstanding reviews, ordered by urgency."
+        "404":
+          description: The review group wasn't recognized.
+      summary: List features whose external reviews are incomplete
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /feature-latency:
+    get:
+      operationId: list_feature_latency
+      parameters:
+      - description: "Start date (RFC 3339, section 5.6, for example, 2017-07-21).\
+          \ The date is inclusive."
+        explode: true
+        in: query
+        name: startAt
+        required: true
+        schema:
+          format: date
+          type: string
+        style: form
+      - description: "End date (RFC 3339, section 5.6, for example, 2017-07-21). The\
+          \ date is exclusive."
+        explode: true
+        in: query
+        name: endAt
+        required: true
+        schema:
+          format: date
+          type: string
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/FeatureLatency'
+                type: array
+          description: List the latency of features that launched in date range.
+        "400":
+          description: One of the query parameters isn't a valid date in ISO YYYY-MM-DD
+            format.
+      summary: List how long each feature took to launch
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /feature_links:
+    get:
+      operationId: get_feature_links
+      parameters:
+      - explode: true
+        in: query
+        name: feature_id
+        required: false
+        schema:
+          type: integer
+        style: form
+      - explode: true
+        in: query
+        name: update_stale_links
+        required: false
+        schema:
+          default: true
+          type: boolean
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureLinksResponse'
+          description: return the links and its information to the client
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: missing feature_id
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: feature not found
+      summary: Get feature links by feature_id
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /feature_links_samples:
+    get:
+      operationId: get_feature_links_samples
+      parameters:
+      - explode: true
+        in: query
+        name: domain
+        required: false
+        schema:
+          type: string
+        style: form
+      - explode: true
+        in: query
+        name: type
+        required: false
+        schema:
+          type: string
+        style: form
+      - explode: true
+        in: query
+        name: is_error
+        required: false
+        schema:
+          type: boolean
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureLinksSample'
+          description: return the sample links to the client
+      summary: Get feature links samples
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /feature_links_summary:
+    get:
+      operationId: get_feature_links_summary
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureLinksSummaryResponse'
+          description: return the links and its information to the client
+      summary: Get feature links summary
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/<int:feature_id>/approvals/<int:gate_id>/comments:
+    get:
+      operationId: get_gate_comments
+      parameters:
+      - explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - explode: false
+        in: path
+        name: gate_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/Activity'
+                type: array
+          description: List of comments for the gate.
+      summary: Get all comments for a given gate
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: add_gate_comment
+      parameters:
+      - explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - explode: false
+        in: path
+        name: gate_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentsRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Comment added successfully
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: User is not allowed to comment on this gate
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Gate not found
+      summary: Add a comment to a specific gate
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/<int:feature_id>/approvals/comments:
+    get:
+      operationId: get_feature_comments
+      parameters:
+      - explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetCommentsResponse'
+          description: List of comments for the feature.
+      summary: Get all comments for a given feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    patch:
+      operationId: update_feature_comment
+      parameters:
+      - explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchCommentRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Comment updated successfully
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: User is not allowed to update this comment
+      summary: Update a comment on a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: add_feature_comment
+      parameters:
+      - explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentsRequest'
+        description: Add a review commend and possible set a approval value
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Comment added successfully
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: User is not allowed to comment on this feature
+      summary: Add a comment to a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/attachments:
+    post:
+      operationId: add_attachment
+      parameters:
+      - description: Feature ID
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/addAttachment_request'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddAttachmentResponse'
+          description: The URL of the stored attachment.
+      summary: Store a file that will be attached to a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/gates:
+    get:
+      operationId: get_gates_for_feature
+      parameters:
+      - description: The ID of the feature to retrieve votes for.
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetGateResponse'
+          description: A list of gates for the specified feature. List can be empty.
+      summary: Get all gates for a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/gates/{gate_id}:
+    patch:
+      operationId: set_assignees_for_gate
+      parameters:
+      - description: The ID of the feature to retrieve votes for.
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - description: The ID of the gate to retrieve votes for.
+        explode: false
+        in: path
+        name: gate_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchGateRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Assignees set successfully
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Assignee is not a reviewer
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: User does not have permission.
+      summary: Set the assignees for a gate.
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/process:
+    get:
+      operationId: get_process
+      parameters:
+      - description: Feature ID
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Process'
+          description: The process for the feature
+        "404":
+          description: Feature not found based on given ID.
+      summary: Get the process for a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/progress:
+    get:
+      operationId: get_progress
+      parameters:
+      - description: Feature ID
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+          description: "The progress for the feature. Since there's no fixed data\
+            \ structure for progress, it's defined as a free-form object."
+        "404":
+          description: Feature not found based on given ID.
+      summary: Get the progress for a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: set_progress_vote
+      parameters:
+      - description: Feature ID
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostProgressVoteRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Progress vote set successfully
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Invalid request parameters.
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: User does not have permission.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Feature not found based on given ID.
+      summary: Set a user's vote value for a progress item on the specified feature.
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/stages/{stage_id}/addXfnGates:
+    post:
+      operationId: add_xfn_gates_to_stage
+      parameters:
+      - explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - explode: false
+        in: path
+        name: stage_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Vote set successfully
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: User does not have permission.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Feature or Stage not found.
+      summary: Add a full set of cross-functional gates to a stage.
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/votes:
+    get:
+      operationId: get_votes_for_feature
+      parameters:
+      - description: Feature ID
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetVotesResponse'
+          description: A list of votes for the specified feature.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Feature not found
+      summary: Get votes for a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/votes/{gate_id}:
+    get:
+      operationId: get_votes_for_feature_and_gate
+      parameters:
+      - description: The ID of the feature to retrieve votes for.
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - description: The ID of the gate associated with the votes.
+        explode: false
+        in: path
+        name: gate_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetVotesResponse'
+          description: A list of votes for the specified feature and gate.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Feature or gate not found.
+      summary: Get votes for a feature and gate
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: set_vote_for_feature_and_gate
+      parameters:
+      - description: The ID of the feature to retrieve votes for.
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - description: The ID of the gate associated with the votes.
+        explode: false
+        in: path
+        name: gate_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostVoteRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Vote set successfully
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Feature or gate not found.
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: User does not have permission.
+      summary: Set a user's vote value for the specific feature and gate.
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /features/{feature_id}/{stage_id}/{gate_id}/intent:
+    get:
+      operationId: get_intent_body
+      parameters:
+      - description: Feature ID
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - description: Stage ID
+        explode: false
+        in: path
+        name: stage_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - description: Gate ID
+        explode: false
+        in: path
+        name: gate_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            'application/json:':
+              schema:
+                $ref: '#/components/schemas/GetIntentResponse'
+          description: Intent draft body.
+        "400":
+          description: No feature or stage ID specified.
+        "404":
+          description: Feature or stage not found based on given ID.
+      summary: Get the HTML body of an intent draft
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: post_intent_to_blink_dev
+      parameters:
+      - description: Feature ID
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - description: Stage ID
+        explode: false
+        in: path
+        name: stage_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - description: Gate ID
+        explode: false
+        in: path
+        name: gate_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostIntentRequest'
+        description: Gate ID and additional users to CC email to.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+          description: Intent draft body.
+        "400":
+          description: No feature or stage ID specified.
+        "404":
+          description: Feature or stage not found based on given ID.
+      summary: Submit an intent to be posted on blink-dev
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /gates/pending:
+    get:
+      operationId: get_pending_gates
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetGateResponse'
+          description: A list of all pending gates.
+      summary: Get all pending gates
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /login:
+    get:
+      operationId: reject_get_requests_login
+      responses:
+        "405":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectUnneededGetRequest'
+          description: Method Not Allowed
+      summary: reject unneeded GET request without triggering Error Reporting
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: authenticate_user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: User authenticated successfully
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Invalid Token
+      summary: Authenticate user with Google Sign-In
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /logout:
+    get:
+      operationId: reject_get_requests_logout
+      responses:
+        "405":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectUnneededGetRequest'
+          description: Method Not Allowed
+      summary: reject unneeded GET request without triggering Error Reporting
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      operationId: logout_user
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: User logged out successfully
+      summary: Log out the current user
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /milestone-curation/{milestone}:
+    get:
+      operationId: get_milestone_curation
+      parameters:
+      - description: Target Chromium milestone number (positive integer)
+        explode: false
+        in: path
+        name: milestone
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MilestoneCurationResponse'
+          description: Success
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Bad Request - Invalid milestone parameter
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Unauthorized - Authentication required
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Forbidden - Insufficient permissions to view editorial curation
+            details
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Milestone curation record not found
+      summary: Get editorial review status and curation details for a release milestone
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    patch:
+      operationId: update_milestone_curation
+      parameters:
+      - description: Target Chromium milestone number (positive integer)
+        explode: false
+        in: path
+        name: milestone
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MilestoneCurationPatchRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MilestoneCurationResponse'
+          description: Success
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: "Bad Request - Malformed payload, invalid status enum, or invalid\
+            \ curator emails"
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Unauthorized - Authentication required
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Forbidden - Insufficient editorial/admin review permissions
+            (`can_review_release_notes` / `can_edit_all`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Milestone curation record not found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Conflict - Concurrent editorial update conflict
+      summary: Update editorial review status or curator assignment for a release
+        milestone
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /origintrials:
+    get:
+      operationId: get_origin_trials
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOriginTrialsResponse'
+          description: List of all origin trials
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Error obtaining origin trial data from API or Malformed response
+            from origin trials API
+      summary: Get origin trials
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /origintrials/{feature_id}/{extension_stage_id}/extend:
+    patch:
+      operationId: extend_origin_trial
+      parameters:
+      - explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - explode: false
+        in: path
+        name: extension_stage_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Origin trial extended successfully
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: "Invalid request. Possible reasons include missing or incorrect\
+            \ feature/stage, or validation errors."
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: The specified feature or stage was not found.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: "Server error, such as issues with the origin trials API or\
+            \ Chromium schedule."
+      summary: Extend an existing origin trial
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /origintrials/{feature_id}/{stage_id}/create:
+    post:
+      operationId: create_origin_trial
+      parameters:
+      - explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      - explode: false
+        in: path
+        name: stage_id
+        required: true
+        schema:
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOriginTrialRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Origin trial created successfully
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: "Invalid request. Possible reasons include an unapproved gate,\
+            \ a missing feature/stage, or validation errors."
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: The specified feature or stage was not found.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: "Server error, such as issues with obtaining necessary Chromium\
+            \ files or origin trial data."
+      summary: Create a new origin trial
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /releasenotes/l10n:
+    get:
+      operationId: get_release_notes_l10n
+      parameters:
+      - description: The start milestone of the range
+        explode: true
+        in: query
+        name: startMilestone
+        required: true
+        schema:
+          type: integer
+        style: form
+      - description: The end milestone of the range
+        explode: true
+        in: query
+        name: endMilestone
+        required: true
+        schema:
+          type: integer
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseNotesL10nResponse'
+          description: Success
+      summary: Get release notes for a milestone range (localized)
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /releasenotes/{milestone}:
+    get:
+      operationId: get_release_notes
+      parameters:
+      - description: Target Chromium milestone number (positive integer)
+        explode: false
+        in: path
+        name: milestone
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseNotesResponse'
+          description: Success
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Bad Request - Invalid milestone parameter
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Milestone not found or has no release notes
+      summary: Get categorized release notes for a milestone (read-only)
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /review-latency:
+    get:
+      operationId: list_reviews_with_latency
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ReviewLatency'
+                type: array
+          description: List of recent reviews and their latency.
+      summary: List recently reviewed features and their review latency
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /spec_mentors:
+    get:
+      operationId: list_spec_mentors
+      parameters:
+      - explode: true
+        in: query
+        name: after
+        required: false
+        schema:
+          format: date
+          type: string
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/SpecMentor'
+                type: array
+          description: List of all the matching spec mentors.
+        "400":
+          description: The ?after query parameter isn't a valid date in ISO YYYY-MM-DD
+            format.
+      summary: List spec mentors and their activity
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /summary-suggestions/pending:
+    get:
+      description: "Retrieves a cursor-paginated list of pending AI summary suggestions\
+        \ for the release notes review queue. Omit cursor on initial request. Pass\
+        \ limit (default 25, max 100) to control page size. Pass next_cursor as the\
+        \ cursor query parameter on subsequent requests to fetch the next page. When\
+        \ next_cursor is null, the end of the queue has been reached."
+      operationId: get_pending_summary_suggestions
+      parameters:
+      - description: Opaque cursor token returned from a previous response next_cursor
+          field. Omit on initial page request.
+        explode: true
+        in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+        style: form
+      - description: "Maximum number of items to return per page (default: 25, max:\
+          \ 100)."
+        explode: true
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 25
+          maximum: 100
+          minimum: 1
+          type: integer
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummarySuggestionListResponse'
+          description: Success
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Bad Request - Invalid pagination limit or cursor parameter
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Unauthorized - Authentication required
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Forbidden - Insufficient editorial permissions (`can_review_release_notes`)
+      summary: Get paginated list of pending summary suggestions for release notes
+        review queue
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /summary-suggestions/pending-count:
+    get:
+      description: Retrieves the total count of pending AI summary suggestions awaiting
+        release notes editorial review.
+      operationId: get_pending_summary_suggestions_count
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingSuggestionsCountResponse'
+          description: Success
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Unauthorized - Authentication required
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Forbidden - Insufficient editorial permissions to view review
+            queue metrics
+      summary: Get count of pending summary suggestions for review queue
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /summary-suggestions/{feature_id}:
+    get:
+      operationId: get_summary_suggestion
+      parameters:
+      - description: Feature ID (positive integer)
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummarySuggestionResponse'
+          description: Success
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Bad Request - Invalid feature_id parameter
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Unauthorized - Authentication required to view confidential
+            feature
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Forbidden - BOLA/IDOR check failed (`permissions.can_view_feature`
+            returned false)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Feature or suggestion not found
+      summary: Get AI summary suggestion and progress timeline for a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    patch:
+      operationId: update_summary_suggestion
+      parameters:
+      - description: Feature ID (positive integer)
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SummarySuggestionPatchRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummarySuggestionResponse'
+          description: Success
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: "Bad Request - Malformed JSON body, invalid enum, or missing\
+            \ required version_token"
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Unauthorized - Authentication required to edit summary suggestion
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Forbidden - Insufficient editorial/author permissions (`can_edit_any_feature`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Feature or suggestion not found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Conflict - OCC version token mismatch
+      summary: Update AI summary suggestion status or fields
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+    post:
+      description: "Enqueues an asynchronous background Cloud Task to generate an\
+        \ AI release notes summary. Verifies feature edit permissions (owner, editor,\
+        \ admin) before enqueuing."
+      operationId: trigger_summary_generation
+      parameters:
+      - description: Feature ID (positive integer)
+        explode: false
+        in: path
+        name: feature_id
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SummarySuggestionTriggerRequest'
+        required: false
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+          description: Success - Task enqueued
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Bad Request - Invalid feature_id parameter or non-boolean force
+            parameter
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Unauthorized - Authentication required
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Forbidden - Insufficient edit permissions for this feature
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+          description: Feature not found or marked soft-deleted
+      summary: Enqueue AI summary generation task for a feature
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /web_feature_ids:
+    get:
+      operationId: get_web_feature_ids
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  type: string
+                type: array
+          description: List the Web Feature IDs.
+      summary: Get Baseline web feature IDs
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
+  /web_feature_infos:
+    get:
+      operationId: get_web_feature_infos
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebFeatureInfosResponse'
+          description: List the Web Feature Infos.
+      summary: Get Baseline web feature infos
+      x-openapi-router-controller: chromestatus_openapi.controllers.default_controller
 components:
+  parameters:
+    startAtParam:
+      description: "Start date (RFC 3339, section 5.6, for example, 2017-07-21). The\
+        \ date is inclusive."
+      explode: true
+      in: query
+      name: startAt
+      required: true
+      schema:
+        format: date
+        type: string
+      style: form
+    endAtParam:
+      description: "End date (RFC 3339, section 5.6, for example, 2017-07-21). The\
+        \ date is exclusive."
+      explode: true
+      in: query
+      name: endAt
+      required: true
+      schema:
+        format: date
+        type: string
+      style: form
   schemas:
+    Vote:
+      example:
+        feature_id: 0
+        gate_id: 6
+        gate_type: 1
+        set_by: set_by
+        state: 5
+        set_on: set_on
+      properties:
+        feature_id:
+          title: feature_id
+          type: integer
+        gate_id:
+          title: gate_id
+          type: integer
+        gate_type:
+          title: gate_type
+          type: integer
+        set_by:
+          format: email
+          title: set_by
+          type: string
+        set_on:
+          title: set_on
+          type: string
+        state:
+          title: state
+          type: integer
+      required:
+      - feature_id
+      - gate_id
+      - set_by
+      - set_on
+      - state
+      title: Vote
+      type: object
+    AddAttachmentResponse:
+      example:
+        attachment_url: attachment_url
+      properties:
+        attachment_url:
+          title: attachment_url
+          type: string
+      title: AddAttachmentResponse
+      type: object
+    GetVotesResponse:
+      example:
+        votes:
+        - feature_id: 0
+          gate_id: 6
+          gate_type: 1
+          set_by: set_by
+          state: 5
+          set_on: set_on
+        - feature_id: 0
+          gate_id: 6
+          gate_type: 1
+          set_by: set_by
+          state: 5
+          set_on: set_on
+      properties:
+        votes:
+          items:
+            $ref: '#/components/schemas/Vote'
+          title: votes
+          type: array
+      title: GetVotesResponse
+      type: object
+    PostVoteRequest:
+      example:
+        state: 0
+      properties:
+        state:
+          description: "The vote value to set. E.g., 2 to request a review, 5 to approve."
+          title: state
+          type: integer
+      required:
+      - state
+      title: PostVoteRequest
+      type: object
+    PostProgressVoteRequest:
+      example:
+        feedback: feedback
+        progress_item_name: progress_item_name
+        state: 0
+      properties:
+        progress_item_name:
+          description: The name of the progress item being reviewed.
+          title: progress_item_name
+          type: string
+        state:
+          description: "The vote value to set (1=READY_FOR_REVIEW, 2=VERIFIED, 3=NA,\
+            \ 4=NEEDS_WORK)."
+          title: state
+          type: integer
+        feedback:
+          description: Optional feedback from the reviewer.
+          title: feedback
+          type: string
+      required:
+      - progress_item_name
+      - state
+      title: PostProgressVoteRequest
+      type: object
+    Gate:
+      example:
+        feature_id: 6
+        self_certify_possible: true
+        stage_id: 1
+        slo_initial_response: 2
+        needs_work_started_on: 2000-01-23T04:56:07.000+00:00
+        gate_name: gate_name
+        requested_on: 2000-01-23T04:56:07.000+00:00
+        team_name: team_name
+        slo_initial_response_took: 7
+        slo_resolve_remaining: 4
+        additional_review: true
+        gate_type: 5
+        next_action: next_action
+        slo_resolve_took: 2
+        survey_answers:
+          launch_or_contact: launch_or_contact
+          adoption_mdn_drafted: true
+          covers_existence: true
+          covers_integration: true
+          adoption_fields_up_to_date: true
+          explanation: explanation
+          adoption_mwg_drafted: true
+          is_language_polyfill: true
+          covers_errors: true
+          adoption_style_aligned: true
+          is_api_polyfill: true
+          covers_common_cases: true
+          adoption_lead_time: true
+          is_same_origin_css: true
+          covers_invalidation: true
+        escalation_email: escalation_email
+        assignee_emails:
+        - assignee_emails
+        - assignee_emails
+        slo_initial_response_remaining: 9
+        id: 0
+        state: 5
+        possible_assignee_emails:
+        - possible_assignee_emails
+        - possible_assignee_emails
+        responded_on: 2000-01-23T04:56:07.000+00:00
+        self_certify_eligible: true
+        slo_resolve: 3
+      properties:
+        id:
+          title: id
+          type: integer
+        feature_id:
+          title: feature_id
+          type: integer
+        stage_id:
+          title: stage_id
+          type: integer
+        gate_type:
+          title: gate_type
+          type: integer
+        team_name:
+          title: team_name
+          type: string
+        gate_name:
+          title: gate_name
+          type: string
+        escalation_email:
+          nullable: true
+          title: escalation_email
+          type: string
+        state:
+          title: state
+          type: integer
+        requested_on:
+          format: date-time
+          title: requested_on
+          type: string
+        responded_on:
+          format: date-time
+          title: responded_on
+          type: string
+        assignee_emails:
+          items:
+            format: email
+            type: string
+          title: assignee_emails
+          type: array
+        next_action:
+          format: data
+          title: next_action
+          type: string
+        additional_review:
+          title: additional_review
+          type: boolean
+        slo_initial_response:
+          default: 5
+          description: DEFAULT_SLO_LIMIT is 5 in approval_defs.py
+          title: slo_initial_response
+          type: integer
+        slo_initial_response_took:
+          title: slo_initial_response_took
+          type: integer
+        slo_initial_response_remaining:
+          title: slo_initial_response_remaining
+          type: integer
+        slo_resolve:
+          default: 10
+          description: DEFAULT_SLO_RESOLVE_LIMIT is 10 in approval_defs.py
+          title: slo_resolve
+          type: integer
+        slo_resolve_took:
+          title: slo_resolve_took
+          type: integer
+        slo_resolve_remaining:
+          title: slo_resolve_remaining
+          type: integer
+        needs_work_started_on:
+          format: date-time
+          title: needs_work_started_on
+          type: string
+        possible_assignee_emails:
+          items:
+            format: email
+            type: string
+          title: possible_assignee_emails
+          type: array
+        self_certify_eligible:
+          title: self_certify_eligible
+          type: boolean
+        self_certify_possible:
+          title: self_certify_possible
+          type: boolean
+        survey_answers:
+          $ref: '#/components/schemas/SurveyAnswers'
+      title: Gate
+      type: object
+    SurveyAnswers:
+      example:
+        launch_or_contact: launch_or_contact
+        adoption_mdn_drafted: true
+        covers_existence: true
+        covers_integration: true
+        adoption_fields_up_to_date: true
+        explanation: explanation
+        adoption_mwg_drafted: true
+        is_language_polyfill: true
+        covers_errors: true
+        adoption_style_aligned: true
+        is_api_polyfill: true
+        covers_common_cases: true
+        adoption_lead_time: true
+        is_same_origin_css: true
+        covers_invalidation: true
+      properties:
+        is_language_polyfill:
+          title: is_language_polyfill
+          type: boolean
+        is_api_polyfill:
+          title: is_api_polyfill
+          type: boolean
+        is_same_origin_css:
+          title: is_same_origin_css
+          type: boolean
+        covers_existence:
+          title: covers_existence
+          type: boolean
+        covers_common_cases:
+          title: covers_common_cases
+          type: boolean
+        covers_errors:
+          title: covers_errors
+          type: boolean
+        covers_invalidation:
+          title: covers_invalidation
+          type: boolean
+        covers_integration:
+          title: covers_integration
+          type: boolean
+        adoption_fields_up_to_date:
+          title: adoption_fields_up_to_date
+          type: boolean
+        adoption_style_aligned:
+          title: adoption_style_aligned
+          type: boolean
+        adoption_lead_time:
+          title: adoption_lead_time
+          type: boolean
+        adoption_mdn_drafted:
+          title: adoption_mdn_drafted
+          type: boolean
+        adoption_mwg_drafted:
+          title: adoption_mwg_drafted
+          type: boolean
+        launch_or_contact:
+          title: launch_or_contact
+          type: string
+        explanation:
+          title: explanation
+          type: string
+      title: SurveyAnswers
+      type: object
+    GetGateResponse:
+      example:
+        gates:
+        - feature_id: 6
+          self_certify_possible: true
+          stage_id: 1
+          slo_initial_response: 2
+          needs_work_started_on: 2000-01-23T04:56:07.000+00:00
+          gate_name: gate_name
+          requested_on: 2000-01-23T04:56:07.000+00:00
+          team_name: team_name
+          slo_initial_response_took: 7
+          slo_resolve_remaining: 4
+          additional_review: true
+          gate_type: 5
+          next_action: next_action
+          slo_resolve_took: 2
+          survey_answers:
+            launch_or_contact: launch_or_contact
+            adoption_mdn_drafted: true
+            covers_existence: true
+            covers_integration: true
+            adoption_fields_up_to_date: true
+            explanation: explanation
+            adoption_mwg_drafted: true
+            is_language_polyfill: true
+            covers_errors: true
+            adoption_style_aligned: true
+            is_api_polyfill: true
+            covers_common_cases: true
+            adoption_lead_time: true
+            is_same_origin_css: true
+            covers_invalidation: true
+          escalation_email: escalation_email
+          assignee_emails:
+          - assignee_emails
+          - assignee_emails
+          slo_initial_response_remaining: 9
+          id: 0
+          state: 5
+          possible_assignee_emails:
+          - possible_assignee_emails
+          - possible_assignee_emails
+          responded_on: 2000-01-23T04:56:07.000+00:00
+          self_certify_eligible: true
+          slo_resolve: 3
+        - feature_id: 6
+          self_certify_possible: true
+          stage_id: 1
+          slo_initial_response: 2
+          needs_work_started_on: 2000-01-23T04:56:07.000+00:00
+          gate_name: gate_name
+          requested_on: 2000-01-23T04:56:07.000+00:00
+          team_name: team_name
+          slo_initial_response_took: 7
+          slo_resolve_remaining: 4
+          additional_review: true
+          gate_type: 5
+          next_action: next_action
+          slo_resolve_took: 2
+          survey_answers:
+            launch_or_contact: launch_or_contact
+            adoption_mdn_drafted: true
+            covers_existence: true
+            covers_integration: true
+            adoption_fields_up_to_date: true
+            explanation: explanation
+            adoption_mwg_drafted: true
+            is_language_polyfill: true
+            covers_errors: true
+            adoption_style_aligned: true
+            is_api_polyfill: true
+            covers_common_cases: true
+            adoption_lead_time: true
+            is_same_origin_css: true
+            covers_invalidation: true
+          escalation_email: escalation_email
+          assignee_emails:
+          - assignee_emails
+          - assignee_emails
+          slo_initial_response_remaining: 9
+          id: 0
+          state: 5
+          possible_assignee_emails:
+          - possible_assignee_emails
+          - possible_assignee_emails
+          responded_on: 2000-01-23T04:56:07.000+00:00
+          self_certify_eligible: true
+          slo_resolve: 3
+      properties:
+        gates:
+          items:
+            $ref: '#/components/schemas/Gate'
+          title: gates
+          type: array
+      title: GetGateResponse
+      type: object
+    PatchGateRequest:
+      example:
+        assignees:
+        - assignees
+        - assignees
+        survey_answers:
+          launch_or_contact: launch_or_contact
+          adoption_mdn_drafted: true
+          covers_existence: true
+          covers_integration: true
+          adoption_fields_up_to_date: true
+          explanation: explanation
+          adoption_mwg_drafted: true
+          is_language_polyfill: true
+          covers_errors: true
+          adoption_style_aligned: true
+          is_api_polyfill: true
+          covers_common_cases: true
+          adoption_lead_time: true
+          is_same_origin_css: true
+          covers_invalidation: true
+      properties:
+        assignees:
+          items:
+            format: email
+            type: string
+          title: assignees
+          type: array
+        survey_answers:
+          $ref: '#/components/schemas/SurveyAnswers'
+      title: PatchGateRequest
+      type: object
+    Process:
+      example:
+        name: name
+        stages:
+        - progress_items:
+          - field: field
+            criteria: criteria
+            name: name
+            description: description
+          - field: field
+            criteria: criteria
+            name: name
+            description: description
+          stage_type: 6
+          name: name
+          description: description
+          actions:
+          - prerequisites:
+            - prerequisites
+            - prerequisites
+            gate_types:
+            - 0
+            - 0
+            name: name
+            url: url
+          - prerequisites:
+            - prerequisites
+            - prerequisites
+            gate_types:
+            - 0
+            - 0
+            name: name
+            url: url
+        - progress_items:
+          - field: field
+            criteria: criteria
+            name: name
+            description: description
+          - field: field
+            criteria: criteria
+            name: name
+            description: description
+          stage_type: 6
+          name: name
+          description: description
+          actions:
+          - prerequisites:
+            - prerequisites
+            - prerequisites
+            gate_types:
+            - 0
+            - 0
+            name: name
+            url: url
+          - prerequisites:
+            - prerequisites
+            - prerequisites
+            gate_types:
+            - 0
+            - 0
+            name: name
+            url: url
+        description: description
+        applicability: applicability
+      properties:
+        name:
+          title: name
+          type: string
+        description:
+          title: description
+          type: string
+        applicability:
+          title: applicability
+          type: string
+        stages:
+          items:
+            $ref: '#/components/schemas/ProcessStage'
+          title: stages
+          type: array
+      title: Process
+      type: object
+    ProcessStage:
+      example:
+        progress_items:
+        - field: field
+          criteria: criteria
+          name: name
+          description: description
+        - field: field
+          criteria: criteria
+          name: name
+          description: description
+        stage_type: 6
+        name: name
+        description: description
+        actions:
+        - prerequisites:
+          - prerequisites
+          - prerequisites
+          gate_types:
+          - 0
+          - 0
+          name: name
+          url: url
+        - prerequisites:
+          - prerequisites
+          - prerequisites
+          gate_types:
+          - 0
+          - 0
+          name: name
+          url: url
+      properties:
+        name:
+          title: name
+          type: string
+        description:
+          title: description
+          type: string
+        progress_items:
+          items:
+            $ref: '#/components/schemas/ProgressItem'
+          title: progress_items
+          type: array
+        actions:
+          items:
+            $ref: '#/components/schemas/Action'
+          title: actions
+          type: array
+        stage_type:
+          nullable: true
+          title: stage_type
+          type: integer
+      title: ProcessStage
+      type: object
+    ProgressItem:
+      example:
+        field: field
+        criteria: criteria
+        name: name
+        description: description
+      properties:
+        name:
+          title: name
+          type: string
+        field:
+          title: field
+          type: string
+        description:
+          title: description
+          type: string
+        criteria:
+          title: criteria
+          type: string
+      title: ProgressItem
+      type: object
+    Action:
+      example:
+        prerequisites:
+        - prerequisites
+        - prerequisites
+        gate_types:
+        - 0
+        - 0
+        name: name
+        url: url
+      properties:
+        name:
+          title: name
+          type: string
+        url:
+          title: url
+          type: string
+        prerequisites:
+          items:
+            type: string
+          title: prerequisites
+          type: array
+        gate_types:
+          items:
+            type: integer
+          title: gate_types
+          type: array
+      title: Action
+      type: object
+    GateInfo:
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        gate_type:
+          type: integer
+        rule:
+          type: string
+        approvers:
+          description: A list of approvers. A single string can also be accepted and
+            will be treated as a list containing that string.
+          type: string
+        team_name:
+          type: string
+        escalation_email:
+          nullable: true
+          type: string
+        slo_initial_response:
+          default: 5
+          description: DEFAULT_SLO_LIMIT is 5 in approval_defs.py
+          type: integer
+        slo_resolve:
+          default: 10
+          description: DEFAULT_SLO_RESOLVE_LIMIT is 10 in approval_defs.py
+          type: integer
+      type: object
+    Amendment:
+      example:
+        old_value: old_value
+        new_value: new_value
+        field_name: field_name
+      properties:
+        field_name:
+          title: field_name
+          type: string
+        old_value:
+          title: old_value
+          type: string
+        new_value:
+          title: new_value
+          type: string
+      required:
+      - field_name
+      - new_value
+      - old_value
+      title: Amendment
+      type: object
+    Activity:
+      example:
+        feature_id: 6
+        gate_id: 1
+        created: created
+        author: author
+        deleted_by: deleted_by
+        amendments:
+        - old_value: old_value
+          new_value: new_value
+          field_name: field_name
+        - old_value: old_value
+          new_value: new_value
+          field_name: field_name
+        comment_id: 0
+        content: content
+      properties:
+        comment_id:
+          title: comment_id
+          type: integer
+        feature_id:
+          title: feature_id
+          type: integer
+        gate_id:
+          nullable: true
+          title: gate_id
+          type: integer
+        created:
+          title: created
+          type: string
+        author:
+          title: author
+          type: string
+        content:
+          title: content
+          type: string
+        deleted_by:
+          nullable: true
+          title: deleted_by
+          type: string
+        amendments:
+          items:
+            $ref: '#/components/schemas/Amendment'
+          title: amendments
+          type: array
+      required:
+      - author
+      - comment_id
+      - content
+      - created
+      - feature_id
+      title: Activity
+      type: object
+    CommentsRequest:
+      example:
+        postToThreadType: 0
+        comment: comment
+      properties:
+        comment:
+          title: comment
+          type: string
+        postToThreadType:
+          nullable: true
+          title: postToThreadType
+          type: integer
+      title: CommentsRequest
+      type: object
+    GetCommentsResponse:
+      example:
+        comments:
+        - feature_id: 6
+          gate_id: 1
+          created: created
+          author: author
+          deleted_by: deleted_by
+          amendments:
+          - old_value: old_value
+            new_value: new_value
+            field_name: field_name
+          - old_value: old_value
+            new_value: new_value
+            field_name: field_name
+          comment_id: 0
+          content: content
+        - feature_id: 6
+          gate_id: 1
+          created: created
+          author: author
+          deleted_by: deleted_by
+          amendments:
+          - old_value: old_value
+            new_value: new_value
+            field_name: field_name
+          - old_value: old_value
+            new_value: new_value
+            field_name: field_name
+          comment_id: 0
+          content: content
+      properties:
+        comments:
+          items:
+            $ref: '#/components/schemas/Activity'
+          title: comments
+          type: array
+      title: GetCommentsResponse
+      type: object
+    PatchCommentRequest:
+      example:
+        commentId: 0
+        isUndelete: true
+      properties:
+        commentId:
+          description: The ID of the comment to be updated
+          title: commentId
+          type: integer
+        isUndelete:
+          description: Indicates whether to undelete (true) or delete (false) the
+            comment
+          title: isUndelete
+          type: boolean
+      required:
+      - commentId
+      - isUndelete
+      title: PatchCommentRequest
+      type: object
+    CreateAccountRequest:
+      example:
+        isSiteEditor: true
+        isAdmin: true
+        email: email
+      properties:
+        email:
+          title: email
+          type: string
+        isAdmin:
+          title: isAdmin
+          type: boolean
+        isSiteEditor:
+          title: isSiteEditor
+          type: boolean
+      required:
+      - email
+      title: CreateAccountRequest
+      type: object
+    AccountResponse:
+      example:
+        is_admin: true
+        is_site_editor: true
+        id: 0
+        email: email
+      properties:
+        is_admin:
+          title: is_admin
+          type: boolean
+        is_site_editor:
+          title: is_site_editor
+          type: boolean
+        email:
+          title: email
+          type: string
+        id:
+          title: id
+          type: integer
+      title: AccountResponse
+      type: object
+    OriginTrialsInfo:
+      example:
+        original_end_milestone: original_end_milestone
+        start_milestone: start_milestone
+        intent_to_experiment_url: intent_to_experiment_url
+        allow_third_party_origins: true
+        end_time: end_time
+        description: description
+        display_name: display_name
+        documentation_url: documentation_url
+        type: type
+        end_milestone: end_milestone
+        enabled: true
+        feedback_url: feedback_url
+        chromestatus_url: chromestatus_url
+        origin_trial_feature_name: origin_trial_feature_name
+        id: id
+        trial_extensions:
+        - "{}"
+        - "{}"
+        status: status
+      properties:
+        id:
+          title: id
+          type: string
+        display_name:
+          title: display_name
+          type: string
+        description:
+          title: description
+          type: string
+        origin_trial_feature_name:
+          title: origin_trial_feature_name
+          type: string
+        enabled:
+          title: enabled
+          type: boolean
+        status:
+          title: status
+          type: string
+        chromestatus_url:
+          title: chromestatus_url
+          type: string
+        start_milestone:
+          title: start_milestone
+          type: string
+        end_milestone:
+          title: end_milestone
+          type: string
+        original_end_milestone:
+          title: original_end_milestone
+          type: string
+        end_time:
+          title: end_time
+          type: string
+        documentation_url:
+          title: documentation_url
+          type: string
+        feedback_url:
+          title: feedback_url
+          type: string
+        intent_to_experiment_url:
+          title: intent_to_experiment_url
+          type: string
+        trial_extensions:
+          items:
+            type: object
+          title: trial_extensions
+          type: array
+        type:
+          title: type
+          type: string
+        allow_third_party_origins:
+          title: allow_third_party_origins
+          type: boolean
+      title: OriginTrialsInfo
+      type: object
+    GetOriginTrialsResponse:
+      example:
+        origin_trials:
+        - original_end_milestone: original_end_milestone
+          start_milestone: start_milestone
+          intent_to_experiment_url: intent_to_experiment_url
+          allow_third_party_origins: true
+          end_time: end_time
+          description: description
+          display_name: display_name
+          documentation_url: documentation_url
+          type: type
+          end_milestone: end_milestone
+          enabled: true
+          feedback_url: feedback_url
+          chromestatus_url: chromestatus_url
+          origin_trial_feature_name: origin_trial_feature_name
+          id: id
+          trial_extensions:
+          - "{}"
+          - "{}"
+          status: status
+        - original_end_milestone: original_end_milestone
+          start_milestone: start_milestone
+          intent_to_experiment_url: intent_to_experiment_url
+          allow_third_party_origins: true
+          end_time: end_time
+          description: description
+          display_name: display_name
+          documentation_url: documentation_url
+          type: type
+          end_milestone: end_milestone
+          enabled: true
+          feedback_url: feedback_url
+          chromestatus_url: chromestatus_url
+          origin_trial_feature_name: origin_trial_feature_name
+          id: id
+          trial_extensions:
+          - "{}"
+          - "{}"
+          status: status
+      properties:
+        origin_trials:
+          items:
+            $ref: '#/components/schemas/OriginTrialsInfo'
+          title: origin_trials
+          type: array
+      title: GetOriginTrialsResponse
+    CreateOriginTrialRequest:
+      allOf:
+      - $ref: '#/components/schemas/StageField'
+      - $ref: '#/components/schemas/MilestoneSetField'
+      example:
+        finch_url:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_display_name:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_creation__bypass_file_checks:
+          form_field_name: form_field_name
+          value: "{}"
+        rollout_platforms:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_feedback_submission_url:
+          form_field_name: form_field_name
+          value: "{}"
+        rollout_stage_plan:
+          form_field_name: form_field_name
+          value: "{}"
+        desktop_last:
+          form_field_name: form_field_name
+          value: "{}"
+        android_first:
+          form_field_name: form_field_name
+          value: "{}"
+        android_last:
+          form_field_name: form_field_name
+          value: "{}"
+        announcement_url:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_description:
+          form_field_name: form_field_name
+          value: "{}"
+        rollout_details:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_approval_buganizer_component:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_approval_criteria_url:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_approval_group_email:
+          form_field_name: form_field_name
+          value: "{}"
+        experiment_extension_reason:
+          form_field_name: form_field_name
+          value: "{}"
+        rollout_milestone:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_owner_email:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_request_note:
+          form_field_name: form_field_name
+          value: "{}"
+        ios_last:
+          form_field_name: form_field_name
+          value: "{}"
+        browser:
+          form_field_name: form_field_name
+          value: "{}"
+        webview_first:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_documentation_url:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_emails:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_require_approvals:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_has_third_party_support:
+          form_field_name: form_field_name
+          value: "{}"
+        experiment_goals:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_stage_id:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_approval_buganizer_custom_field_id:
+          form_field_name: form_field_name
+          value: "{}"
+        intent_thread_url:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_is_critical_trial:
+          form_field_name: form_field_name
+          value: "{}"
+        display_name:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_is_deprecation_trial:
+          form_field_name: form_field_name
+          value: "{}"
+        rollout_impact:
+          form_field_name: form_field_name
+          value: "{}"
+        origin_trial_feedback_url:
+          form_field_name: form_field_name
+          value: "{}"
+        desktop_first:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_requester_email:
+          form_field_name: form_field_name
+          value: "{}"
+        experiment_risks:
+          form_field_name: form_field_name
+          value: "{}"
+        ios_first:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_action_requested:
+          form_field_name: form_field_name
+          value: "{}"
+        origin_trial_id:
+          form_field_name: form_field_name
+          value: "{}"
+        webview_last:
+          form_field_name: form_field_name
+          value: "{}"
+        enterprise_policies:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_chromium_trial_name:
+          form_field_name: form_field_name
+          value: "{}"
+        ot_webfeature_use_counter:
+          form_field_name: form_field_name
+          value: "{}"
+      title: CreateOriginTrialRequest
+      type: object
+    VerifyContinuityIssueResponse:
+      properties:
+        verification_status:
+          type: boolean
+        verification_failure_reason:
+          type: string
+        launch_issue_id:
+          type: integer
+      type: object
+    CreateLaunchIssueRequest:
+      properties:
+        feature_id:
+          type: integer
+        gate_id:
+          type: integer
+      required:
+      - feature_id
+      - gate_id
+      type: object
+    StageField:
+      properties:
+        announcement_url:
+          $ref: '#/components/schemas/FieldInfo'
+        browser:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_description:
+          $ref: '#/components/schemas/FieldInfo'
+        display_name:
+          $ref: '#/components/schemas/FieldInfo'
+        enterprise_policies:
+          $ref: '#/components/schemas/FieldInfo'
+        finch_url:
+          $ref: '#/components/schemas/FieldInfo'
+        experiment_goals:
+          $ref: '#/components/schemas/FieldInfo'
+        experiment_risks:
+          $ref: '#/components/schemas/FieldInfo'
+        experiment_extension_reason:
+          $ref: '#/components/schemas/FieldInfo'
+        intent_thread_url:
+          $ref: '#/components/schemas/FieldInfo'
+        origin_trial_feedback_url:
+          $ref: '#/components/schemas/FieldInfo'
+        origin_trial_id:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_approval_buganizer_component:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_approval_buganizer_custom_field_id:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_approval_criteria_url:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_approval_group_email:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_chromium_trial_name:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_display_name:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_action_requested:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_creation__bypass_file_checks:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_documentation_url:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_emails:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_feedback_submission_url:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_has_third_party_support:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_is_critical_trial:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_is_deprecation_trial:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_owner_email:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_requester_email:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_request_note:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_require_approvals:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_stage_id:
+          $ref: '#/components/schemas/FieldInfo'
+        ot_webfeature_use_counter:
+          $ref: '#/components/schemas/FieldInfo'
+        rollout_impact:
+          $ref: '#/components/schemas/FieldInfo'
+        rollout_milestone:
+          $ref: '#/components/schemas/FieldInfo'
+        rollout_platforms:
+          $ref: '#/components/schemas/FieldInfo'
+        rollout_details:
+          $ref: '#/components/schemas/FieldInfo'
+        rollout_stage_plan:
+          $ref: '#/components/schemas/FieldInfo'
+      title: StageField
+      type: object
+    MilestoneSetField:
+      properties:
+        desktop_first:
+          $ref: '#/components/schemas/FieldInfo'
+        desktop_last:
+          $ref: '#/components/schemas/FieldInfo'
+        android_first:
+          $ref: '#/components/schemas/FieldInfo'
+        android_last:
+          $ref: '#/components/schemas/FieldInfo'
+        ios_first:
+          $ref: '#/components/schemas/FieldInfo'
+        ios_last:
+          $ref: '#/components/schemas/FieldInfo'
+        webview_first:
+          $ref: '#/components/schemas/FieldInfo'
+        webview_last:
+          $ref: '#/components/schemas/FieldInfo'
+      title: MilestoneSetField
+      type: object
+    FieldInfo:
+      example:
+        form_field_name: form_field_name
+        value: "{}"
+      properties:
+        form_field_name:
+          title: form_field_name
+          type: string
+        value:
+          discriminator:
+            mapping:
+              integer: '#/components/schemas/IntegerFieldInfoValue'
+              string: '#/components/schemas/StringFieldInfoValue'
+              boolean: '#/components/schemas/BooleanFieldInfoValue'
+              array: '#/components/schemas/ArrayFieldInfoValue'
+            propertyName: value_type
+          title: FieldInfoValue
+          type: object
+      title: FieldInfo
+      type: object
+    StringFieldInfoValue:
+      properties:
+        form_field_name:
+          type: string
+        value_type:
+          type: string
+        value:
+          type: string
+      type: object
+    BooleanFieldInfoValue:
+      properties:
+        form_field_name:
+          type: string
+        value_type:
+          type: string
+        value:
+          type: boolean
+      type: object
+    IntegerFieldInfoValue:
+      properties:
+        form_field_name:
+          type: string
+        value_type:
+          type: string
+        value:
+          type: integer
+      type: object
+    ArrayFieldInfoValue:
+      properties:
+        form_field_name:
+          type: string
+        value_type:
+          type: string
+        value:
+          items:
+            type: string
+          type: array
+      type: object
+    FieldInfoValue:
+      discriminator:
+        mapping:
+          integer: '#/components/schemas/IntegerFieldInfoValue'
+          string: '#/components/schemas/StringFieldInfoValue'
+          boolean: '#/components/schemas/BooleanFieldInfoValue'
+          array: '#/components/schemas/ArrayFieldInfoValue'
+        propertyName: value_type
+      title: FieldInfoValue
+      type: object
+    GetIntentResponse:
+      example:
+        email_body: email_body
+        subject: subject
+      properties:
+        subject:
+          title: subject
+          type: string
+        email_body:
+          title: email_body
+          type: string
+      required:
+      - email_body
+      - subject
+      title: GetIntentResponse
+    PostIntentRequest:
+      example:
+        intent_cc_emails:
+        - intent_cc_emails
+        - intent_cc_emails
+        gate_id: 0
+      properties:
+        gate_id:
+          title: gate_id
+          type: integer
+        intent_cc_emails:
+          items:
+            type: string
+          title: intent_cc_emails
+          type: array
+      required:
+      - gate_id
+      - intent_cc_emails
+      title: PostIntentRequest
+    MessageResponse:
+      example:
+        message: message
+      properties:
+        message:
+          title: message
+          type: string
+      required:
+      - message
+      title: MessageResponse
     ComponentsUsersResponse:
       example:
         components:
@@ -181,3 +3125,1374 @@ components:
           title: owner
           type: boolean
       title: ComponentUsersRequest
+    ReviewLatency:
+      example:
+        gate_reviews:
+        - gate_type: 0
+          latency_days: 6
+        - gate_type: 0
+          latency_days: 6
+        feature:
+          name: WebGPU
+          id: 5703707724349440
+      properties:
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        gate_reviews:
+          items:
+            $ref: '#/components/schemas/GateLatency'
+          title: gate_reviews
+          type: array
+      required:
+      - feature
+      - gate_reviews
+      title: ReviewLatency
+      type: object
+    SignInRequest:
+      example:
+        credential: credential
+      properties:
+        credential:
+          description: The credential generated by Sign-In With Google.
+          title: credential
+          type: string
+      required:
+      - credential
+      title: SignInRequest
+      type: object
+    GateLatency:
+      example:
+        gate_type: 0
+        latency_days: 6
+      properties:
+        gate_type:
+          title: gate_type
+          type: integer
+        latency_days:
+          title: latency_days
+          type: integer
+      required:
+      - gate_type
+      - latency_days
+      title: GateLatency
+      type: object
+    SpecMentor:
+      example:
+        mentored_features:
+        - name: WebGPU
+          id: 5703707724349440
+        - name: WebGPU
+          id: 5703707724349440
+        email: email
+      properties:
+        email:
+          format: email
+          title: email
+          type: string
+        mentored_features:
+          items:
+            $ref: '#/components/schemas/FeatureLink'
+          title: mentored_features
+          type: array
+      required:
+      - email
+      - mentored_features
+      title: SpecMentor
+      type: object
+    FeatureLatency:
+      example:
+        owner_emails:
+        - owner_emails
+        - owner_emails
+        feature:
+          name: WebGPU
+          id: 5703707724349440
+        shipped_date: 2000-01-23
+        entry_created_date: 2000-01-23
+        shipped_milestone: 0
+      properties:
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        entry_created_date:
+          format: date
+          title: entry_created_date
+          type: string
+        shipped_milestone:
+          title: shipped_milestone
+          type: integer
+        shipped_date:
+          format: date
+          title: shipped_date
+          type: string
+        owner_emails:
+          items:
+            format: email
+            type: string
+          title: owner_emails
+          type: array
+      required:
+      - entry_created_date
+      - feature
+      - owner_emails
+      - shipped_date
+      - shipped_milestone
+      title: FeatureLatency
+      type: object
+    ExternalReviewsResponse:
+      example:
+        link_previews:
+        - information: "{}"
+          type: type
+          http_error_code: 1
+          url: http://example.com/aeiou
+        - information: "{}"
+          type: type
+          http_error_code: 1
+          url: http://example.com/aeiou
+        reviews:
+        - feature:
+            name: WebGPU
+            id: 5703707724349440
+          estimated_end_milestone: 6
+          review_link: http://example.com/aeiou
+          current_stage: incubating
+          estimated_start_milestone: 0
+        - feature:
+            name: WebGPU
+            id: 5703707724349440
+          estimated_end_milestone: 6
+          review_link: http://example.com/aeiou
+          current_stage: incubating
+          estimated_start_milestone: 0
+      properties:
+        reviews:
+          items:
+            $ref: '#/components/schemas/OutstandingReview'
+          title: reviews
+          type: array
+        link_previews:
+          items:
+            $ref: '#/components/schemas/LinkPreview'
+          title: link_previews
+          type: array
+      required:
+      - link_previews
+      - reviews
+      title: ExternalReviewsResponse
+      type: object
+    OutstandingReview:
+      example:
+        feature:
+          name: WebGPU
+          id: 5703707724349440
+        estimated_end_milestone: 6
+        review_link: http://example.com/aeiou
+        current_stage: incubating
+        estimated_start_milestone: 0
+      properties:
+        review_link:
+          format: url
+          title: review_link
+          type: string
+        feature:
+          $ref: '#/components/schemas/FeatureLink'
+        current_stage:
+          description: |
+            The development stage that the feature has reached:
+              - [`incubating`](https://www.chromium.org/blink/launching-features/#start-incubating)
+              - [`prototyping`](https://www.chromium.org/blink/launching-features/#prototyping)
+              - [`dev-trial`](https://www.chromium.org/blink/launching-features/#dev-trials)
+              - [`wide-review`](https://www.chromium.org/blink/launching-features/#widen-review)
+              - [`origin-trial`](https://www.chromium.org/blink/launching-features/#origin-trials)
+              - [`shipping`](https://www.chromium.org/blink/launching-features/#new-feature-prepare-to-ship)
+              - `shipped` - The feature is enabled by default in Chromium.
+          enum:
+          - incubating
+          - prototyping
+          - dev-trial
+          - wide-review
+          - origin-trial
+          - shipping
+          - shipped
+          title: current_stage
+          type: string
+        estimated_start_milestone:
+          title: estimated_start_milestone
+          type: integer
+        estimated_end_milestone:
+          title: estimated_end_milestone
+          type: integer
+      required:
+      - current_stage
+      - feature
+      - review_link
+      title: OutstandingReview
+      type: object
+    FeatureLink:
+      example:
+        name: WebGPU
+        id: 5703707724349440
+      properties:
+        id:
+          example: 5703707724349440
+          title: id
+          type: integer
+        name:
+          example: WebGPU
+          title: name
+          type: string
+      required:
+      - id
+      - name
+      title: FeatureLink
+      type: object
+    LinkPreviewBase:
+      properties:
+        url:
+          format: url
+          title: url
+          type: string
+        type:
+          title: type
+          type: string
+        information:
+          nullable: true
+          title: information
+          type: object
+        http_error_code:
+          nullable: true
+          title: http_error_code
+          type: integer
+      required:
+      - type
+      - url
+      title: LinkPreviewBase
+      type: object
+    LinkPreview:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - discriminator:
+          mapping:
+            github_issue: LinkPreviewGithubIssue
+            github_markdown: LinkPreviewGithubMarkdown
+            github_pull_request: LinkPreviewGithubPullRequest
+            mdn_docs: LinkPreviewMdnDocs
+            google_docs: LinkPreviewGoogleDocs
+            mozilla_bug: LinkPreviewMozillaBug
+            webkit_bug: LinkPreviewWebkitBug
+            specs: LinkPreviewSpecs
+          propertyName: type
+      example:
+        information: "{}"
+        type: type
+        http_error_code: 1
+        url: http://example.com/aeiou
+      title: LinkPreview
+    LinkPreviewGithubIssue:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - properties:
+          information:
+            $ref: '#/components/schemas/LinkPreviewGithubIssue_allOf_information'
+        type: object
+      title: LinkPreviewGithubIssue
+    LinkPreviewGithubPullRequest:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewGithubIssue'
+    LinkPreviewGithubMarkdown:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - properties:
+          information:
+            $ref: '#/components/schemas/LinkPreviewGithubMarkdown_allOf_information'
+        type: object
+    LinkPreviewOpenGraph:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - properties:
+          information:
+            $ref: '#/components/schemas/LinkPreviewOpenGraph_allOf_information'
+        type: object
+      title: LinkPreviewOpenGraph
+    LinkPreviewMdnDocs:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewGoogleDocs:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewMozillaBug:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewWebkitBug:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    LinkPreviewSpecs:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewOpenGraph'
+    FeatureLinksResponse:
+      example:
+        data:
+        - information: "{}"
+          type: type
+          http_error_code: 1
+          url: http://example.com/aeiou
+        - information: "{}"
+          type: type
+          http_error_code: 1
+          url: http://example.com/aeiou
+        has_stale_links: true
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/LinkPreview'
+          title: data
+          type: array
+        has_stale_links:
+          title: has_stale_links
+          type: boolean
+      title: FeatureLinksResponse
+      type: object
+    FeatureLinksSummaryResponse:
+      example:
+        uncovered_count: 1
+        http_error_count: 5
+        link_types:
+        - count: 2
+          key: key
+        - count: 2
+          key: key
+        total_count: 0
+        uncovered_link_domains:
+        - count: 2
+          key: key
+        - count: 2
+          key: key
+        error_count: 5
+        error_link_domains:
+        - count: 2
+          key: key
+        - count: 2
+          key: key
+        covered_count: 6
+      properties:
+        total_count:
+          title: total_count
+          type: integer
+        covered_count:
+          title: covered_count
+          type: integer
+        uncovered_count:
+          title: uncovered_count
+          type: integer
+        error_count:
+          title: error_count
+          type: integer
+        http_error_count:
+          title: http_error_count
+          type: integer
+        link_types:
+          items:
+            $ref: '#/components/schemas/CounterEntry'
+          title: link_types
+          type: array
+        uncovered_link_domains:
+          items:
+            $ref: '#/components/schemas/CounterEntry'
+          title: uncovered_link_domains
+          type: array
+        error_link_domains:
+          items:
+            $ref: '#/components/schemas/CounterEntry'
+          title: error_link_domains
+          type: array
+      title: FeatureLinksSummaryResponse
+      type: object
+    FeatureLinksSample:
+      allOf:
+      - $ref: '#/components/schemas/LinkPreviewBase'
+      - properties:
+          feature_ids:
+            items:
+              type: integer
+            type: array
+        type: object
+      example:
+        feature_ids:
+        - 6
+        - 6
+        information: "{}"
+        type: type
+        http_error_code: 0
+        url: http://example.com/aeiou
+      title: FeatureLinksSample
+    CounterEntry:
+      example:
+        count: 2
+        key: key
+      properties:
+        key:
+          title: key
+          type: string
+        count:
+          title: count
+          type: integer
+      title: CounterEntry
+      type: object
+    WebFeatureInfosResponse:
+      example:
+        data:
+        - feature_id: feature_id
+          status: status
+        - feature_id: feature_id
+          status: status
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/WebFeatureInfo'
+          title: data
+          type: array
+      required:
+      - data
+      title: WebFeatureInfosResponse
+      type: object
+    WebFeatureInfo:
+      example:
+        feature_id: feature_id
+        status: status
+      properties:
+        feature_id:
+          title: feature_id
+          type: string
+        status:
+          title: status
+          type: string
+      required:
+      - feature_id
+      - status
+      title: WebFeatureInfo
+      type: object
+    PermissionsResponse:
+      example:
+        user:
+          is_admin: true
+          can_comment: true
+          editable_features:
+          - 6
+          - 6
+          can_create_feature: true
+          can_review_release_notes: true
+          can_edit_all: true
+          email: email
+          approvable_gate_types:
+          - 0
+          - 0
+      properties:
+        user:
+          $ref: '#/components/schemas/UserPermissions'
+      required:
+      - user
+      title: PermissionsResponse
+      type: object
+    UserPermissions:
+      example:
+        is_admin: true
+        can_comment: true
+        editable_features:
+        - 6
+        - 6
+        can_create_feature: true
+        can_review_release_notes: true
+        can_edit_all: true
+        email: email
+        approvable_gate_types:
+        - 0
+        - 0
+      properties:
+        can_create_feature:
+          title: can_create_feature
+          type: boolean
+        approvable_gate_types:
+          description: each element should be unique as OAS does not support set
+          items:
+            type: integer
+          title: approvable_gate_types
+          type: array
+        can_comment:
+          title: can_comment
+          type: boolean
+        can_edit_all:
+          title: can_edit_all
+          type: boolean
+        can_review_release_notes:
+          title: can_review_release_notes
+          type: boolean
+        is_admin:
+          title: is_admin
+          type: boolean
+        email:
+          format: email
+          title: email
+          type: string
+        editable_features:
+          items:
+            type: integer
+          title: editable_features
+          type: array
+      required:
+      - approvable_gate_types
+      - can_comment
+      - can_create_feature
+      - can_edit_all
+      - editable_features
+      - email
+      - is_admin
+      title: UserPermissions
+      type: object
+    GetStarsResponse:
+      example:
+        feature_ids:
+        - 0
+        - 0
+      properties:
+        feature_ids:
+          items:
+            type: integer
+          title: feature_ids
+          type: array
+      title: GetStarsResponse
+      type: object
+    PostStarsRequest:
+      properties:
+        feature_id:
+          type: integer
+        starred:
+          default: true
+          type: boolean
+      required:
+      - featureId
+      type: object
+    DismissCueRequest:
+      example:
+        cue: progress-checkmarks
+      properties:
+        cue:
+          enum:
+          - progress-checkmarks
+          title: cue
+          type: string
+      required:
+      - cue
+      title: DismissCueRequest
+      type: object
+    GetSettingsResponse:
+      example:
+        notify_as_starrer: true
+      properties:
+        notify_as_starrer:
+          title: notify_as_starrer
+          type: boolean
+      required:
+      - notify_as_starrer
+      title: GetSettingsResponse
+      type: object
+    PostSettingsRequest:
+      example:
+        notify: true
+      properties:
+        notify:
+          title: notify
+          type: boolean
+      required:
+      - notify
+      title: PostSettingsRequest
+      type: object
+    TokenRefreshResponse:
+      properties:
+        token:
+          type: string
+        token_expires_sec:
+          type: integer
+      type: object
+    SuccessMessage:
+      example:
+        message: Done
+      properties:
+        message:
+          example: Done
+          title: message
+          type: string
+      title: SuccessMessage
+      type: object
+    ErrorMessage:
+      example:
+        error: Error
+      properties:
+        error:
+          example: Error
+          title: error
+          type: string
+      title: ErrorMessage
+      type: object
+    RejectUnneededGetRequest:
+      example:
+        message: Method Not Allowed
+      properties:
+        message:
+          example: Method Not Allowed
+          title: message
+          type: string
+      title: RejectUnneededGetRequest
+      type: object
+    ReleaseNotesL10nItem:
+      example:
+        summary: summary
+        name: name
+        stages:
+        - "{}"
+        - "{}"
+        id: 0
+      properties:
+        id:
+          title: id
+          type: integer
+        name:
+          title: name
+          type: string
+        summary:
+          title: summary
+          type: string
+        stages:
+          items:
+            type: object
+          title: stages
+          type: array
+      title: ReleaseNotesL10nItem
+      type: object
+    ReleaseNotesL10nResponse:
+      example:
+        features:
+        - summary: summary
+          name: name
+          stages:
+          - "{}"
+          - "{}"
+          id: 0
+        - summary: summary
+          name: name
+          stages:
+          - "{}"
+          - "{}"
+          id: 0
+        descriptions:
+          key: ""
+      properties:
+        features:
+          items:
+            $ref: '#/components/schemas/ReleaseNotesL10nItem'
+          title: features
+          type: array
+        descriptions:
+          additionalProperties: true
+          title: descriptions
+          type: object
+      title: ReleaseNotesL10nResponse
+      type: object
+    SummaryProgressStep:
+      example:
+        end_timestamp: 2000-01-23T04:56:07.000+00:00
+        start_timestamp: 2000-01-23T04:56:07.000+00:00
+        step: UNKNOWN
+        message: message
+        status: IN_PROGRESS
+      properties:
+        step:
+          description: |
+            The concrete step or tool execution stage in the AI generation pipeline:
+            - UNKNOWN: Fallback for unknown or unsupported execution steps
+            - SEARCH_MDN: Querying MDN documentation
+            - VERIFY_DOC_LINK: Checking external documentation links
+            - READ_SPEC: Fetching and parsing W3C/WHATWG specification
+            - READ_EXPLAINER: Fetching feature explainer document
+          enum:
+          - UNKNOWN
+          - SEARCH_MDN
+          - VERIFY_DOC_LINK
+          - READ_SPEC
+          - READ_EXPLAINER
+          title: step
+          type: string
+        status:
+          description: |
+            Execution status of this step:
+            - IN_PROGRESS: Step is currently running
+            - SUCCESS: Step completed successfully
+            - FAILED: Step failed to complete
+            - RETRYING: Step is re-attempting execution after a transient issue
+          enum:
+          - IN_PROGRESS
+          - SUCCESS
+          - FAILED
+          - RETRYING
+          title: status
+          type: string
+        message:
+          description: "Human-readable progress update, completion summary, or error\
+            \ reason when status is FAILED."
+          title: message
+          type: string
+        start_timestamp:
+          description: Timestamp when this step began execution.
+          format: date-time
+          title: start_timestamp
+          type: string
+        end_timestamp:
+          description: Timestamp when this step reached a terminal state (SUCCESS
+            or FAILED). Null while step is active (IN_PROGRESS or RETRYING).
+          format: date-time
+          nullable: true
+          title: end_timestamp
+          type: string
+      required:
+      - start_timestamp
+      - status
+      - step
+      title: SummaryProgressStep
+      type: object
+    SummarySuggestion:
+      description: "AI-generated summary suggestion entity tracking proposed release\
+        \ notes text, provenance status, confidence score, grounding reasoning, and\
+        \ optimistic concurrency version token."
+      example:
+        feature_id: 1
+        suggested_summary: suggested_summary
+        suggested_doc_links:
+        - suggested_doc_links
+        - suggested_doc_links
+        original_summary: original_summary
+        created: 2000-01-23T04:56:07.000+00:00
+        reasoning: reasoning
+        version_token: 1
+        baseline_status: none
+        updated: 2000-01-23T04:56:07.000+00:00
+        status: PENDING
+      properties:
+        feature_id:
+          description: Associated feature identifier.
+          minimum: 1
+          title: feature_id
+          type: integer
+        suggested_summary:
+          description: AI-suggested release notes summary text.
+          title: suggested_summary
+          type: string
+        original_summary:
+          description: "Feature summary text active prior to AI generation, used for\
+            \ visual diffing and revert workflows."
+          title: original_summary
+          type: string
+        status:
+          description: |
+            Lifecycle status of the summary suggestion:
+            - PENDING: Awaiting review
+            - APPLIED: Approved and applied to feature
+            - REJECTED: Suggestion declined
+            - DISCARDED: Obsolete or feature deleted
+          enum:
+          - PENDING
+          - APPLIED
+          - REJECTED
+          - DISCARDED
+          title: status
+          type: string
+        baseline_status:
+          description: WebDX Baseline interoperability state at suggestion generation
+            time. Null if un-tracked.
+          enum:
+          - none
+          - limited
+          - newly
+          - widely
+          nullable: true
+          title: baseline_status
+          type: string
+        reasoning:
+          description: Grounding rationale and source links evaluated during generation.
+          title: reasoning
+          type: string
+        suggested_doc_links:
+          description: List of verified external documentation links associated with
+            the feature.
+          items:
+            type: string
+          title: suggested_doc_links
+          type: array
+        version_token:
+          description: |
+            Monotonically increasing Optimistic Concurrency Control (OCC) version counter.
+            Increments on every mutation to prevent mid-air collision overwrites during concurrent editorial reviews.
+            (TODO: Migrate to standard HTTP ETag / If-Match headers if the repo adopts header-based OCC across REST endpoints.)
+          minimum: 1
+          title: version_token
+          type: integer
+        created:
+          description: UTC timestamp when the suggestion was created.
+          format: date-time
+          title: created
+          type: string
+        updated:
+          description: UTC timestamp when the suggestion was last modified.
+          format: date-time
+          title: updated
+          type: string
+      required:
+      - created
+      - feature_id
+      - status
+      - updated
+      - version_token
+      title: SummarySuggestion
+      type: object
+    SummarySuggestionResponse:
+      description: Response payload containing a feature summary suggestion and its
+        progress execution steps.
+      example:
+        suggestion:
+          feature_id: 1
+          suggested_summary: suggested_summary
+          suggested_doc_links:
+          - suggested_doc_links
+          - suggested_doc_links
+          original_summary: original_summary
+          created: 2000-01-23T04:56:07.000+00:00
+          reasoning: reasoning
+          version_token: 1
+          baseline_status: none
+          updated: 2000-01-23T04:56:07.000+00:00
+          status: PENDING
+        progress_steps:
+        - end_timestamp: 2000-01-23T04:56:07.000+00:00
+          start_timestamp: 2000-01-23T04:56:07.000+00:00
+          step: UNKNOWN
+          message: message
+          status: IN_PROGRESS
+        - end_timestamp: 2000-01-23T04:56:07.000+00:00
+          start_timestamp: 2000-01-23T04:56:07.000+00:00
+          step: UNKNOWN
+          message: message
+          status: IN_PROGRESS
+      properties:
+        suggestion:
+          $ref: '#/components/schemas/SummarySuggestion'
+        progress_steps:
+          description: Ordered timeline of tool execution progress steps for this
+            summary generation.
+          items:
+            $ref: '#/components/schemas/SummaryProgressStep'
+          title: progress_steps
+          type: array
+      required:
+      - progress_steps
+      - suggestion
+      title: SummarySuggestionResponse
+      type: object
+    SummarySuggestionPatchRequest:
+      description: Payload for updating the review status or text of an AI summary
+        suggestion.
+      example:
+        suggested_summary: suggested_summary
+        original_summary: original_summary
+        version_token: 1
+        status: PENDING
+      properties:
+        status:
+          description: |
+            Updated lifecycle status for the suggestion. Null if status is unchanged:
+            - APPLIED: Approves suggestion, updating FeatureEntry.summary and setting summary_source to AI_APPLIED.
+            - REJECTED: Declines suggestion, preserving manual summary and setting summary_source to HUMAN.
+            - DISCARDED: Obsoletes suggestion (e.g. feature deleted or re-generated).
+          enum:
+          - PENDING
+          - APPLIED
+          - REJECTED
+          - DISCARDED
+          nullable: true
+          title: status
+          type: string
+        suggested_summary:
+          description: Updated summary text edited by reviewer.
+          title: suggested_summary
+          type: string
+        original_summary:
+          description: Pre-existing feature summary text active prior to AI generation.
+          title: original_summary
+          type: string
+        version_token:
+          description: |
+            Expected current version_token of the suggestion being patched for Optimistic Concurrency Control (OCC).
+            Must match the server's current version_token, otherwise the server rejects the request with HTTP 409 Conflict.
+            (TODO: Migrate to standard HTTP ETag / If-Match headers if the repo adopts header-based OCC across REST endpoints.)
+          minimum: 1
+          title: version_token
+          type: integer
+      required:
+      - version_token
+      title: SummarySuggestionPatchRequest
+      type: object
+    SummarySuggestionTriggerRequest:
+      description: Optional payload for triggering AI summary generation.
+      example:
+        force: false
+      properties:
+        force:
+          default: false
+          description: Whether to bypass cached feature fingerprint checks and force
+            LLM generation.
+          title: force
+          type: boolean
+      title: SummarySuggestionTriggerRequest
+      type: object
+    SummarySuggestionListResponse:
+      description: Paginated response containing a list of pending AI summary suggestions
+        for the review queue.
+      example:
+        next_cursor: next_cursor
+        total_count: 0
+        suggestions:
+        - feature_id: 1
+          suggested_summary: suggested_summary
+          suggested_doc_links:
+          - suggested_doc_links
+          - suggested_doc_links
+          original_summary: original_summary
+          created: 2000-01-23T04:56:07.000+00:00
+          reasoning: reasoning
+          version_token: 1
+          baseline_status: none
+          updated: 2000-01-23T04:56:07.000+00:00
+          status: PENDING
+        - feature_id: 1
+          suggested_summary: suggested_summary
+          suggested_doc_links:
+          - suggested_doc_links
+          - suggested_doc_links
+          original_summary: original_summary
+          created: 2000-01-23T04:56:07.000+00:00
+          reasoning: reasoning
+          version_token: 1
+          baseline_status: none
+          updated: 2000-01-23T04:56:07.000+00:00
+          status: PENDING
+      properties:
+        suggestions:
+          description: List of pending summary suggestion objects for the current
+            page.
+          items:
+            $ref: '#/components/schemas/SummarySuggestion'
+          title: suggestions
+          type: array
+        next_cursor:
+          description: Opaque cursor token for requesting the next page of suggestions.
+            Null when on the last page.
+          nullable: true
+          title: next_cursor
+          type: string
+        total_count:
+          description: Total count of matching pending summary suggestions across
+            all pages.
+          minimum: 0
+          title: total_count
+          type: integer
+      required:
+      - suggestions
+      - total_count
+      title: SummarySuggestionListResponse
+      type: object
+    PendingSuggestionsCountResponse:
+      description: Response payload containing the count of pending AI summary suggestions.
+      example:
+        count: 0
+      properties:
+        count:
+          description: Total count of pending AI summary suggestions awaiting release
+            notes editorial review.
+          minimum: 0
+          title: count
+          type: integer
+      required:
+      - count
+      title: PendingSuggestionsCountResponse
+      type: object
+    MilestoneCurationResponse:
+      description: Editorial curation review state for a specific Chromium release
+        milestone.
+      example:
+        milestone: 1
+        curator_emails:
+        - curator_emails
+        - curator_emails
+        last_reviewed: 2000-01-23T04:56:07.000+00:00
+        status: PENDING
+      properties:
+        milestone:
+          description: Target Chromium milestone number.
+          minimum: 1
+          title: milestone
+          type: integer
+        status:
+          description: |
+            Editorial review status of the milestone curation workflow:
+            - PENDING: Milestone curation has not started
+            - IN_REVIEW: Milestone curation is under active editorial review
+            - COMPLETED: Milestone curation review is completed (updates last_reviewed timestamp)
+          enum:
+          - PENDING
+          - IN_REVIEW
+          - COMPLETED
+          title: status
+          type: string
+        curator_emails:
+          description: List of editor email addresses assigned to curate release notes
+            for this milestone.
+          items:
+            type: string
+          title: curator_emails
+          type: array
+        last_reviewed:
+          description: UTC timestamp when milestone curation was last reviewed or
+            completed. Null if unreviewed.
+          format: date-time
+          nullable: true
+          title: last_reviewed
+          type: string
+      required:
+      - curator_emails
+      - milestone
+      - status
+      title: MilestoneCurationResponse
+      type: object
+    MilestoneCurationPatchRequest:
+      description: Payload for updating the curation review status or assigned curators
+        for a milestone.
+      example:
+        curator_emails:
+        - curator_emails
+        - curator_emails
+        status: PENDING
+      properties:
+        status:
+          description: |
+            Updated editorial review status for the milestone. Null if status is unchanged:
+            - PENDING: Milestone curation reset to un-started.
+            - IN_REVIEW: Milestone curation marked under active review.
+            - COMPLETED: Marks milestone curation completed and populates last_reviewed timestamp.
+          enum:
+          - PENDING
+          - IN_REVIEW
+          - COMPLETED
+          nullable: true
+          title: status
+          type: string
+        curator_emails:
+          description: Updated list of assigned curator email addresses.
+          items:
+            type: string
+          title: curator_emails
+          type: array
+      title: MilestoneCurationPatchRequest
+      type: object
+    ReleaseNoteLink:
+      description: Structured reference link for a release note feature.
+      example:
+        type: BUG
+        title: title
+        url: url
+      properties:
+        url:
+          description: Target URL of the resource.
+          title: url
+          type: string
+        type:
+          description: Semantic classification of the feature reference link.
+          enum:
+          - BUG
+          - CHROMESTATUS
+          - SPEC
+          - ORIGIN_TRIAL
+          - DOC
+          - EXPLAINER
+          - DEMO
+          - OTHER
+          title: type
+          type: string
+        title:
+          description: Optional human-readable display label (e.g. 'Tracking bug
+          nullable: true
+          title: title
+          type: string
+      required:
+      - type
+      - url
+      title: ReleaseNoteLink
+      type: object
+    ReleaseNoteFeature:
+      description: Individual feature entry formatted for public release notes.
+      example:
+        summary: summary
+        feature_type: 5
+        category_name: category_name
+        summary_source: HUMAN
+        name: name
+        links:
+        - type: BUG
+          title: title
+          url: url
+        - type: BUG
+          title: title
+          url: url
+        id: 1
+        milestone_classification: SHIPPING
+        category: 1
+        baseline_status: none
+      properties:
+        id:
+          description: Unique feature identifier.
+          minimum: 1
+          title: id
+          type: integer
+        name:
+          description: Feature title or display name.
+          title: name
+          type: string
+        summary:
+          description: Release note summary text (either human-written summary or
+            applied AI suggestion).
+          title: summary
+          type: string
+        category:
+          description: Numeric category identifier.
+          title: category
+          type: integer
+        category_name:
+          description: "Human-readable category label (e.g., 'DOM', 'CSS', 'JavaScript')."
+          title: category_name
+          type: string
+        feature_type:
+          description: "Numeric feature launch type identifier (e.g., New Feature,\
+            \ Deprecation)."
+          title: feature_type
+          type: integer
+        baseline_status:
+          description: WebDX Baseline interoperability state. Null if Baseline status
+            is un-tracked.
+          enum:
+          - none
+          - limited
+          - newly
+          - widely
+          nullable: true
+          title: baseline_status
+          type: string
+        summary_source:
+          description: |
+            Source provenance of the active feature summary text returned in this release note:
+            - AI_APPLIED: The active summary text was generated by AI and explicitly approved by an editor (SummarySuggestion.status == APPLIED).
+            - HUMAN: The active summary text was manually authored by a human developer or editor.
+            Note: Unapproved draft suggestions sitting in state PENDING do not alter the active summary text or its provenance until approved.
+          enum:
+          - HUMAN
+          - AI_APPLIED
+          title: summary_source
+          type: string
+        milestone_classification:
+          default: SHIPPING
+          description: Launch status classification of this feature in the target
+            milestone.
+          enum:
+          - SHIPPING
+          - ORIGIN_TRIAL
+          - DEPRECATION
+          - REMOVAL
+          title: milestone_classification
+          type: string
+        links:
+          description: Structured list of categorized resource and reference links.
+          items:
+            $ref: '#/components/schemas/ReleaseNoteLink'
+          title: links
+          type: array
+      required:
+      - category
+      - category_name
+      - feature_type
+      - id
+      - name
+      - summary
+      - summary_source
+      title: ReleaseNoteFeature
+      type: object
+    ReleaseNotesResponse:
+      description: Public release notes payload containing categorized features for
+        a milestone.
+      example:
+        features:
+        - summary: summary
+          feature_type: 5
+          category_name: category_name
+          summary_source: HUMAN
+          name: name
+          links:
+          - type: BUG
+            title: title
+            url: url
+          - type: BUG
+            title: title
+            url: url
+          id: 1
+          milestone_classification: SHIPPING
+          category: 1
+          baseline_status: none
+        - summary: summary
+          feature_type: 5
+          category_name: category_name
+          summary_source: HUMAN
+          name: name
+          links:
+          - type: BUG
+            title: title
+            url: url
+          - type: BUG
+            title: title
+            url: url
+          id: 1
+          milestone_classification: SHIPPING
+          category: 1
+          baseline_status: none
+        milestone: 1
+      properties:
+        milestone:
+          description: Target Chromium milestone number.
+          minimum: 1
+          title: milestone
+          type: integer
+        features:
+          description: List of curated feature release notes for the milestone.
+          items:
+            $ref: '#/components/schemas/ReleaseNoteFeature'
+          title: features
+          type: array
+      required:
+      - features
+      - milestone
+      title: ReleaseNotesResponse
+      type: object
+    addAttachment_request:
+      properties:
+        uploaded-file:
+          format: binary
+          type: string
+      type: object
+    deleteAccount_200_response:
+      example:
+        message: Done
+      properties:
+        message:
+          example: Done
+          title: message
+          type: string
+      title: deleteAccount_200_response
+      type: object
+    setStar_request:
+      properties:
+        featureId:
+          title: featureId
+          type: integer
+        starred:
+          title: starred
+          type: boolean
+      title: setStar_request
+      type: object
+    getDismissedCues_400_response:
+      example:
+        error: error
+      properties:
+        error:
+          title: error
+          type: string
+      title: getDismissedCues_400_response
+      type: object
+    LinkPreviewGithubIssue_allOf_information:
+      properties:
+        url:
+          format: url
+          title: url
+          type: string
+        number:
+          title: number
+          type: integer
+        title:
+          title: title
+          type: string
+        user_login:
+          title: user_login
+          type: string
+        state:
+          enum:
+          - open
+          - closed
+          title: state
+          type: string
+        state_reason:
+          enum:
+          - completed
+          - reopened
+          - not_planned
+          title: state_reason
+          type: string
+        assignee_login:
+          title: assignee_login
+          type: string
+        created_at:
+          format: date-time
+          title: created_at
+          type: string
+        updated_at:
+          format: date-time
+          title: updated_at
+          type: string
+        closed_at:
+          format: date-time
+          title: closed_at
+          type: string
+        labels:
+          items:
+            type: string
+          title: labels
+          type: array
+      title: LinkPreviewGithubIssue_allOf_information
+      type: object
+    LinkPreviewGithubMarkdown_allOf_information:
+      properties:
+        _parsed_title:
+          title: _parsed_title
+          type: string
+        content:
+          title: content
+          type: string
+      title: LinkPreviewGithubMarkdown_allOf_information
+      type: object
+    LinkPreviewOpenGraph_allOf_information:
+      properties:
+        title:
+          title: title
+          type: string
+        description:
+          title: description
+          type: string
+      title: LinkPreviewOpenGraph_allOf_information
+      type: object
+  securitySchemes:
+    XsrfToken:
+      in: header
+      name: X-Xsrf-Token
+      type: apiKey
+      x-apikeyInfoFunc: chromestatus_openapi.controllers.security_controller.info_from_XsrfToken

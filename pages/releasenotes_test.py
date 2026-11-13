@@ -1,0 +1,492 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for pages/releasenotes module."""
+
+from html.parser import HTMLParser
+from unittest import mock
+
+import flask
+import werkzeug.exceptions
+
+import testing_config
+from internals import core_enums
+from pages import releasenotes
+
+test_app = flask.Flask(__name__, template_folder='../templates')
+
+
+class ReleaseNotesHTMLParser(HTMLParser):
+    """Collector parser using Python's built-in html.parser library."""
+
+    def __init__(self) -> None:
+        """Initialize parser attributes."""
+        super().__init__()
+        self.tags: list[tuple[str, dict[str, str]]] = []
+        self.links: list[str] = []
+        self.headings: list[str] = []
+        self._current_tag: str | None = None
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        """Collect start tags, attributes, and href links."""
+        attr_dict = {k: (v or '') for k, v in attrs}
+        self.tags.append((tag, attr_dict))
+        if tag == 'a' and 'href' in attr_dict:
+            self.links.append(attr_dict['href'])
+        self._current_tag = tag
+
+    def handle_data(self, data: str) -> None:
+        """Collect text data for h1, h2, and h3 headings."""
+        text = data.strip()
+        if text and self._current_tag in ('h1', 'h2', 'h3'):
+            self.headings.append(text)
+
+
+class ReleaseNotesHandlerTest(testing_config.CustomTestCase):
+    """Unit tests for ReleaseNotesHandler SSR page controller."""
+
+    def setUp(self):
+        """Set up test environment and mock data."""
+        super().setUp()
+        self.handler = releasenotes.ReleaseNotesHandler()
+        self.mock_features = [
+            {
+                'id': 101,
+                'name': 'Sample CSS Feature',
+                'summary': (
+                    'Summary with `CSS.highlights`, [Spec'
+                    ' Link](https://example.com/spec), and'
+                    ' https://web.dev/webgpu.'
+                ),
+                'category': core_enums.CSS,
+                'category_name': 'CSS',
+                'milestone_classification': (
+                    core_enums.ReleaseNoteMilestoneClassification.SHIPPING
+                ),
+                'links': [
+                    {
+                        'url': 'https://issues.chromium.org/issues/40731275',
+                        'type': core_enums.ReleaseNoteLinkType.BUG,
+                        'title': 'Tracking bug #40731275',
+                    },
+                    {
+                        'url': '/feature/101',
+                        'type': core_enums.ReleaseNoteLinkType.CHROMESTATUS,
+                        'title': 'ChromeStatus.com entry',
+                    },
+                    {
+                        'url': 'https://www.w3.org/TR/css-overflow-3/',
+                        'type': core_enums.ReleaseNoteLinkType.SPEC,
+                        'title': 'Spec',
+                    },
+                    {
+                        'url': 'https://example.com/spec',
+                        'type': core_enums.ReleaseNoteLinkType.DOC,
+                        'title': None,
+                    },
+                ],
+            },
+            {
+                'id': 102,
+                'name': 'Sample Origin Trial Feature',
+                'summary': 'Summary for active origin trial feature.',
+                'category': core_enums.DOM,
+                'category_name': 'Web APIs',
+                'milestone_classification': (
+                    core_enums.ReleaseNoteMilestoneClassification.ORIGIN_TRIAL
+                ),
+                'links': [
+                    {
+                        'url': '/origintrials#/view_trial/trial-123',
+                        'type': core_enums.ReleaseNoteLinkType.ORIGIN_TRIAL,
+                        'title': 'Origin Trial',
+                    },
+                    {
+                        'url': '/feature/102',
+                        'type': core_enums.ReleaseNoteLinkType.CHROMESTATUS,
+                        'title': 'ChromeStatus.com entry',
+                    },
+                ],
+            },
+            {
+                'id': 103,
+                'name': 'Sample Deprecated Feature',
+                'summary': 'Summary for removed feature.',
+                'category': core_enums.SECURITY,
+                'category_name': 'Security',
+                'milestone_classification': (
+                    core_enums.ReleaseNoteMilestoneClassification.DEPRECATION
+                ),
+                'links': [
+                    {
+                        'url': 'https://issues.chromium.org/issues/123456',
+                        'type': core_enums.ReleaseNoteLinkType.BUG,
+                        'title': 'Tracking bug #123456',
+                    },
+                    {
+                        'url': '/feature/103',
+                        'type': core_enums.ReleaseNoteLinkType.CHROMESTATUS,
+                        'title': 'ChromeStatus.com entry',
+                    },
+                ],
+            },
+        ]
+
+        patcher = mock.patch(
+            'internals.feature_helpers.get_developer_release_notes_features',
+            return_value=self.mock_features,
+        )
+        self.addCleanup(patcher.stop)
+        self.mock_get_features = patcher.start()
+
+        release_info_patcher = mock.patch(
+            'internals.fetchchannels.fetch_chrome_release_info',
+            return_value={
+                'stable_date': '2026-09-01T00:00:00',
+                'earliest_beta': '2026-08-05T00:00:00',
+                'mstone': 152,
+                'version': 152,
+            },
+        )
+        self.addCleanup(release_info_patcher.stop)
+        self.mock_fetch_release_info = release_info_patcher.start()
+
+    def test_http_cache_type_private(self):
+        """It configures private HTTP caching to prevent CDN caching of XSRF tokens."""
+        self.assertEqual(
+            'private', releasenotes.ReleaseNotesHandler.HTTP_CACHE_TYPE
+        )
+
+    def test_get_template_data__specific_milestone(self):
+        """It returns template context data for a specific milestone >= 152."""
+        with test_app.test_request_context('/release-notes/152'):
+            data = self.handler.get_template_data(milestone=152)
+            self.assertEqual(152, data['milestone'])
+            self.assertEqual('September 1, 2026', data['stable_date'])
+            self.assertEqual(
+                'Scheduled Stable Release September 1, 2026',
+                data['ui']['scheduled_stable_release'],
+            )
+            self.assertEqual(151, data['prev_milestone'])
+            self.assertEqual(153, data['next_milestone'])
+            self.assertTrue(data['is_min_ssr_milestone'])
+            self.assertIn('features_by_category', data)
+            self.assertIn('milestones_list', data)
+            self.assertEqual(124, data['milestones_list'][-1])
+            self.assertIn('seo', data)
+            self.assertEqual(
+                'Chrome 152 Release Notes', data['seo']['seo_title']
+            )
+
+    def test_get_template_data__m124_to_m151_redirect(self):
+        """It returns an HTTP 302 redirect to developer.chrome.com/release-notes/<milestone> for 124 <= m < 152."""
+        with test_app.test_request_context('/release-notes/151'):
+            resp = self.handler.get_template_data(milestone=151)
+            self.assertEqual(302, resp.status_code)
+            self.assertEqual(
+                'https://developer.chrome.com/release-notes/151',
+                resp.headers['Location'],
+            )
+
+        with test_app.test_request_context('/release-notes/150'):
+            resp = self.handler.get_template_data(milestone=150)
+            self.assertEqual(302, resp.status_code)
+            self.assertEqual(
+                'https://developer.chrome.com/release-notes/150',
+                resp.headers['Location'],
+            )
+
+        with test_app.test_request_context('/release-notes/124'):
+            resp = self.handler.get_template_data(milestone=124)
+            self.assertEqual(302, resp.status_code)
+            self.assertEqual(
+                'https://developer.chrome.com/release-notes/124',
+                resp.headers['Location'],
+            )
+
+    def test_get_template_data__pre_m124_archive_redirect(self):
+        """It returns an HTTP 302 redirect to developer.chrome.com/release-notes archive root for m < 124."""
+        for pre_124_m in (1, 100, 120, 123):
+            with test_app.test_request_context(f'/release-notes/{pre_124_m}'):
+                resp = self.handler.get_template_data(milestone=pre_124_m)
+                self.assertEqual(302, resp.status_code)
+                self.assertEqual(
+                    'https://developer.chrome.com/release-notes',
+                    resp.headers['Location'],
+                )
+
+    def test_get_template_data__default_milestone(self):
+        """It defaults to current stable milestone when no milestone param is provided."""
+        with test_app.test_request_context('/release-notes'):
+            with mock.patch(
+                'internals.fetchchannels.get_current_stable_milestone',
+                return_value=152,
+            ):
+                data = self.handler.get_template_data()
+                self.assertEqual(152, data['milestone'])
+
+    def test_get_template_data__upstream_omaha_downtime_fallback(self):
+        """It gracefully falls back to MIN_SSR_RELEASE_NOTES_MILESTONE if Omaha returns 0."""
+        with test_app.test_request_context('/release-notes'):
+            with mock.patch(
+                'internals.fetchchannels.get_current_stable_milestone',
+                return_value=0,
+            ):
+                data = self.handler.get_template_data()
+                self.assertEqual(152, data['milestone'])
+                self.assertEqual(152, data['stable_milestone'])
+                self.assertEqual(154, data['milestones_list'][0])
+                self.assertEqual(124, data['milestones_list'][-1])
+
+    def test_get_template_data__string_milestone(self):
+        """It accepts string milestone parameters and coerces them to int."""
+        with test_app.test_request_context('/release-notes/152'):
+            data = self.handler.get_template_data(milestone='152')
+            self.assertEqual(152, data['milestone'])
+
+    def test_get_template_data__invalid_milestone_400(self):
+        """It aborts HTTP 400 for non-positive milestone values or invalid strings."""
+        for invalid_val in (0, -1, -150, '-5', 'abc'):
+            with test_app.test_request_context(f'/release-notes/{invalid_val}'):
+                with self.assertRaises(werkzeug.exceptions.HTTPException) as cm:
+                    self.handler.get_template_data(milestone=invalid_val)
+                self.assertEqual(400, cm.exception.code)
+
+    def test_get_template_data__out_of_range_milestone_404(self):
+        """It aborts HTTP 404 for excessively large out-of-range future milestones."""
+        with test_app.test_request_context('/release-notes/9999'):
+            with mock.patch(
+                'internals.fetchchannels.get_current_stable_milestone',
+                return_value=152,
+            ):
+                with self.assertRaises(werkzeug.exceptions.HTTPException) as cm:
+                    self.handler.get_template_data(milestone=9999)
+                self.assertEqual(404, cm.exception.code)
+
+    def test_render_template_html_structure(self):
+        """It asserts HTML elements, steppers, and jump box using built-in html.parser."""
+        with test_app.test_request_context('/release-notes/152'):
+            data = self.handler.get_template_data(milestone=152)
+            html_str = flask.render_template('release-notes.html', **data)
+
+            parser = ReleaseNotesHTMLParser()
+            parser.feed(html_str)
+
+            # Verify subheader title (rendered as h1) and scheduled stable release date
+            self.assertIn('Chrome 152 Release Notes', parser.headings)
+            self.assertIn(
+                'Scheduled Stable Release September 1, 2026', html_str
+            )
+
+            # Verify previous and next stepper links
+            self.assertIn('/release-notes/151', parser.links)
+            self.assertIn('/release-notes/153', parser.links)
+
+            # Verify archival notice link on M152
+            self.assertIn(
+                'https://developer.chrome.com/release-notes', parser.links
+            )
+
+            # Verify feature title permalinks and anchor links
+            self.assertIn('/feature/101', parser.links)
+            self.assertIn('#feature-101', parser.links)
+            self.assertIn('/feature/102', parser.links)
+            self.assertIn('#feature-102', parser.links)
+            self.assertIn('/feature/103', parser.links)
+            self.assertIn('#feature-103', parser.links)
+
+            # Verify section headings
+            self.assertIn('CSS', parser.headings)
+            self.assertIn('New origin trials', parser.headings)
+            self.assertIn('Deprecations and removals', parser.headings)
+
+            # Verify metadata link bar items
+            self.assertIn(
+                'https://issues.chromium.org/issues/40731275', parser.links
+            )
+            self.assertIn('https://www.w3.org/TR/css-overflow-3/', parser.links)
+            self.assertIn('/origintrials#/view_trial/trial-123', parser.links)
+            self.assertIn(
+                'https://issues.chromium.org/issues/123456', parser.links
+            )
+
+            # Verify CommonMark rendering of feature summary
+            self.assertIn('<code>CSS.highlights</code>', html_str)
+            self.assertIn(
+                '<a href="https://example.com/spec" target="_blank"'
+                ' rel="noopener noreferrer">Spec Link</a>',
+                html_str,
+            )
+            self.assertIn(
+                '<a href="https://web.dev/webgpu" target="_blank"'
+                ' rel="noopener noreferrer">https://web.dev/webgpu</a>',
+                html_str,
+            )
+            # Verify English summary lang attributes
+            self.assertIn(
+                'class="feature-summary" lang="en" data-summary-lang="en"',
+                html_str,
+            )
+
+    def test_get_template_data__japanese_localizes_summaries(self):
+        """It renders localized summary text, release date, and data-summary-lang='ja' when ?hl=ja is requested."""
+        with test_app.test_request_context('/release-notes/152?hl=ja'):
+            data = self.handler.get_template_data(milestone=152)
+            html_str = flask.render_template('release-notes.html', **data)
+            self.assertEqual('ja', data['current_lang'])
+            self.assertEqual('2026年9月1日', data['stable_date'])
+            self.assertIn('安定版のリリース予定日: 2026年9月1日', html_str)
+            self.assertIn(
+                'class="feature-summary" lang="ja" data-summary-lang="ja"',
+                html_str,
+            )
+            self.assertIn('[Translated to ja]', html_str)
+
+    def test_get_template_data__missing_stable_date(self):
+        """It omits the scheduled stable release line when stable_date is None."""
+        self.mock_fetch_release_info.return_value = {
+            'stable_date': None,
+            'earliest_beta': None,
+            'mstone': 152,
+            'version': 152,
+        }
+        with test_app.test_request_context('/release-notes/152'):
+            data = self.handler.get_template_data(milestone=152)
+            html_str = flask.render_template('release-notes.html', **data)
+            self.assertIsNone(data['stable_date'])
+            self.assertEqual('', data['ui']['scheduled_stable_release'])
+            self.assertNotIn(
+                'class="actionlinks release-date-subtitle"', html_str
+            )
+
+    def test_get_template_data__currently_on_beta_channel(self):
+        """It appends '(Currently on Beta channel)' when milestone matches current beta milestone."""
+        with (
+            test_app.test_request_context('/release-notes/153'),
+            mock.patch(
+                'internals.fetchchannels.get_current_beta_milestone',
+                return_value=153,
+            ),
+            mock.patch(
+                'internals.fetchchannels.get_current_channel_milestone',
+                return_value=154,
+            ),
+        ):
+            data = self.handler.get_template_data(milestone=153)
+            html_str = flask.render_template('release-notes.html', **data)
+            self.assertTrue(data['is_on_beta'])
+            self.assertFalse(data['is_on_dev'])
+            self.assertEqual(
+                '(Currently on Beta channel)', data['ui']['channel_status']
+            )
+            self.assertIn(
+                'Scheduled Stable Release September 1, 2026 (Currently on Beta'
+                ' channel)',
+                html_str,
+            )
+
+    def test_get_template_data__currently_on_dev_channel(self):
+        """It appends '(Currently on Dev channel, reaches Beta on DATE)' when milestone matches current dev milestone."""
+        with (
+            test_app.test_request_context('/release-notes/154'),
+            mock.patch(
+                'internals.fetchchannels.get_current_beta_milestone',
+                return_value=153,
+            ),
+            mock.patch(
+                'internals.fetchchannels.get_current_channel_milestone',
+                return_value=154,
+            ),
+        ):
+            data = self.handler.get_template_data(milestone=154)
+            html_str = flask.render_template('release-notes.html', **data)
+            self.assertFalse(data['is_on_beta'])
+            self.assertTrue(data['is_on_dev'])
+            self.assertEqual(
+                '(Currently on Dev channel, reaches Beta on August 5, 2026)',
+                data['ui']['channel_status'],
+            )
+            self.assertIn(
+                'Scheduled Stable Release September 1, 2026 (Currently on Dev'
+                ' channel, reaches Beta on August 5, 2026)',
+                html_str,
+            )
+
+    def test_get_template_data__currently_on_dev_and_beta_channels(self):
+        """It appends '(Currently on Dev and Beta channels)' when milestone is on both channels."""
+        with (
+            test_app.test_request_context('/release-notes/153'),
+            mock.patch(
+                'internals.fetchchannels.get_current_beta_milestone',
+                return_value=153,
+            ),
+            mock.patch(
+                'internals.fetchchannels.get_current_channel_milestone',
+                return_value=153,
+            ),
+        ):
+            data = self.handler.get_template_data(milestone=153)
+            html_str = flask.render_template('release-notes.html', **data)
+            self.assertTrue(data['is_on_beta'])
+            self.assertTrue(data['is_on_dev'])
+            self.assertEqual(
+                '(Currently on Dev and Beta channels)',
+                data['ui']['channel_status'],
+            )
+            self.assertIn(
+                'Scheduled Stable Release September 1, 2026 (Currently on Dev'
+                ' and Beta channels)',
+                html_str,
+            )
+
+    def test_render_template__pending_review_chip(self):
+        """It renders the Pending review chip above h3 when feature.is_pending_review is True."""
+        self.mock_features[0]['is_pending_review'] = True
+        self.mock_features[1]['is_pending_review'] = False
+
+        with test_app.test_request_context('/release-notes/152'):
+            data = self.handler.get_template_data(milestone=152)
+            html_str = flask.render_template('release-notes.html', **data)
+
+            self.assertEqual(
+                1,
+                html_str.count(
+                    '<span class="pending-review-chip">Pending review</span>'
+                ),
+            )
+            chip_idx = html_str.index(
+                '<span class="pending-review-chip">Pending review</span>'
+            )
+            h3_idx = html_str.index('Sample CSS Feature')
+            self.assertLess(chip_idx, h3_idx)
+
+    def test_render_template__pending_review_chip_localized(self):
+        """It renders the localized Pending review chip when ?hl=ja is provided."""
+        self.mock_features[0]['is_pending_review'] = True
+
+        with (
+            test_app.test_request_context('/release-notes/152?hl=ja'),
+            mock.patch(
+                'internals.releasenotes_l10n_helpers.merge_translations',
+                side_effect=lambda features, _lang: features,
+            ),
+        ):
+            data = self.handler.get_template_data(milestone=152)
+            html_str = flask.render_template('release-notes.html', **data)
+            self.assertIn(
+                '<span class="pending-review-chip">レビュー待ち</span>',
+                html_str,
+            )

@@ -12,44 +12,77 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from api.converters import stage_to_json_dict
-from internals.core_enums import OT_EXTENSION_STAGE_TYPES
-from internals.core_models import Stage
 
-from framework import basehandlers
-from framework import permissions
+"""Provides the admin page handler for viewing Origin Trial requests."""
+
+import logging
+
+from google.cloud import ndb
+
+from api.converters import stage_to_json_dict
+from framework import basehandlers, permissions
+from internals import core_enums
+from internals.core_models import Stage
+from internals.review_models import Gate, Vote
 
 
 class OriginTrialsRequests(basehandlers.FlaskHandler):
-  """Display any origin trials requests."""
+    """Display any origin trials requests."""
 
-  TEMPLATE_PATH = 'admin/features/ot_requests.html'
+    TEMPLATE_PATH = 'admin/features/ot_requests.html'
 
-  @permissions.require_admin_site
-  def get_template_data(self, **kwargs):
-    stages_with_requests = Stage.query(
-        Stage.ot_action_requested == True).fetch()
-    creation_stages = []
-    extension_stages = []
-    for stage in stages_with_requests:
-      stage_dict = stage_to_json_dict(stage)
-      # Add the request note that is not typically visible to non-admins.
-      if stage.ot_request_note:
-        stage_dict['ot_request_note'] = stage.ot_request_note
-      # Group up creation and extension requests.
-      if stage_dict['stage_type'] in OT_EXTENSION_STAGE_TYPES:
-        # Information will be needed from the original OT stage.
-        ot_stage = Stage.get_by_id(stage_dict['ot_stage_id'])
-        ot_stage_dict = stage_to_json_dict(ot_stage)
-        # Supply both the OT stage and the extension stage.
-        extension_stages.append({
-            'ot_stage': ot_stage_dict,
-            'extension_stage': stage_dict,
-          })
-      else:
-        creation_stages.append(stage_dict)
+    @permissions.require_admin_site
+    def get_template_data(self, **kwargs):
+        """Retrieves and formats origin trial requests data for the admin view."""
+        stages_with_requests = Stage.query(
+            ndb.OR(
+                Stage.ot_action_requested == True,  # noqa: E712
+                Stage.ot_setup_status == core_enums.OT_READY_FOR_CREATION,
+            )
+        ).fetch()
+        stages_with_failures = Stage.query(
+            ndb.OR(
+                Stage.ot_setup_status == core_enums.OT_ACTIVATION_FAILED,
+                Stage.ot_setup_status == core_enums.OT_CREATION_FAILED,
+            )
+        ).fetch()
+        stages_awaiting_activation = Stage.query(
+            Stage.ot_setup_status == core_enums.OT_CREATED
+        ).fetch()
+        creation_stages = []
+        extension_stages = []
+        for stage in stages_with_requests:
+            stage_dict = stage_to_json_dict(stage)
+            # Group up creation and extension requests.
+            if stage_dict['stage_type'] in core_enums.OT_EXTENSION_STAGE_TYPES:
+                gate: Gate = Gate.query(Gate.stage_id == stage_dict['id']).get()
+                if gate and gate.state in (Vote.NA, Vote.APPROVED):
+                    # Information will be needed from the original OT stage.
+                    ot_stage = Stage.get_by_id(stage_dict['ot_stage_id'])
+                    if ot_stage is None:
+                        logging.warning(
+                            f'Extension stage {stage_dict["id"]} '
+                            f'found with invalid OT stage ID {stage_dict["ot_stage_id"]}.'
+                        )
+                        continue
+                    ot_stage_dict = stage_to_json_dict(ot_stage)
+                    # Supply both the OT stage and the extension stage.
+                    extension_stages.append(
+                        {
+                            'ot_stage': ot_stage_dict,
+                            'extension_stage': stage_dict,
+                        }
+                    )
+            else:
+                creation_stages.append(stage_dict)
 
-    return {
-        'creation_stages': creation_stages,
-        'extension_stages': extension_stages,
-      }
+        failed_stages = [stage_to_json_dict(s) for s in stages_with_failures]
+        activation_pending_stages = [
+            stage_to_json_dict(s) for s in stages_awaiting_activation
+        ]
+        return {
+            'creation_stages': creation_stages,
+            'extension_stages': extension_stages,
+            'activation_pending_stages': activation_pending_stages,
+            'failed_stages': failed_stages,
+        }

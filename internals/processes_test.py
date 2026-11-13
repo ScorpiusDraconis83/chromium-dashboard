@@ -12,301 +12,285 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Tests for the processes module, verifying process dictionaries and stage definitions."""
+
 import collections
+
 import testing_config  # Must be imported before the module under test.
+from internals import (
+    approval_defs,
+    core_enums,
+    core_models,
+    processes,
+)
 
-from unittest import mock
-
-from internals import approval_defs
-from internals import core_enums
-from internals import core_models
-from internals import processes
-from internals import stage_helpers
-
-
-BakeApproval = approval_defs.ApprovalFieldDef(
+BakeGateInfo = approval_defs.GateInfo(
     'Approval for baking',
     'The head chef must approve of you using the oven',
-    9, approval_defs.ONE_LGTM, ['chef@example.com'], 'Chef')
+    9,
+    approval_defs.ONE_LGTM,
+    ['chef@example.com'],
+    'Chef',
+)
 
-BAKE_APPROVAL_DEF_DICT = collections.OrderedDict([
-    ('name', 'Approval for baking'),
-    ('team_name', 'Chef'),
-    ('escalation_email', None),
-    ('description', 'The head chef must approve of you using the oven'),
-    ('field_id', 9),
-    ('rule', approval_defs.ONE_LGTM),
-    ('approvers', ['chef@example.com']),
-    ('slo_initial_response', 5),
-    ])
+BAKE_APPROVAL_DEF_DICT = collections.OrderedDict(
+    [
+        ('name', 'Approval for baking'),
+        ('team_name', 'Chef'),
+        ('escalation_email', None),
+        ('description', 'The head chef must approve of you using the oven'),
+        ('gate_type', 9),
+        ('rule', approval_defs.ONE_LGTM),
+        ('approvers', ['chef@example.com']),
+        ('slo_initial_response', 5),
+        ('slo_resolve', 10),
+    ]
+)
 
-PI_COLD_DOUGH = processes.ProgressItem('Cold dough', 'dough')
+PI_COLD_DOUGH = processes.ProgressItem(
+    'Cold dough', 'dough', 'Moist and plyable', 'No longer sticky'
+)
 PI_LOAF = processes.ProgressItem('A loaf', None)
 PI_DIRTY_PAN = processes.ProgressItem('A dirty pan', None)
 
 STAGE_BAKE_DOUGH = 110
 STAGE_BAKE_BAKE = 120
 
+
 class HelperFunctionsTest(testing_config.CustomTestCase):
+    """Tests for HelperFunctions."""
 
-  def test_process_to_dict(self):
-    process = processes.Process(
-        'Baking',
-        'This is how you make bread',
-        'Make it before you are hungry',
-        [processes.ProcessStage(
-            'Make dough',
-            'Mix it and knead',
-            [PI_COLD_DOUGH],
-            [processes.Action(
-                'Share kneading video', 'https://example.com', [])],
-            [],
-            0, 1, STAGE_BAKE_DOUGH),
-         processes.ProcessStage(
-             'Bake it',
-             'Heat at 375 for 40 minutes',
-             [PI_LOAF, PI_DIRTY_PAN],
-             [],
-             [BakeApproval],
-             1, 2, STAGE_BAKE_BAKE),
-         ])
-    expected = {
-        'name': 'Baking',
-        'description': 'This is how you make bread',
-        'applicability': 'Make it before you are hungry',
-        'stages': [
-            {'name': 'Make dough',
-             'description': 'Mix it and knead',
-             'progress_items': [{'name': 'Cold dough', 'field': 'dough'}],
-             'actions': [{
-                 'name': 'Share kneading video',
-                 'url': 'https://example.com',
-                 'prerequisites': []}],
-             'approvals': [],
-             'incoming_stage': 0,
-             'outgoing_stage': 1,
-             'stage_type': 110},
-            {'name': 'Bake it',
-             'description': 'Heat at 375 for 40 minutes',
-             'progress_items': [
-                 {'name': 'A loaf', 'field': None},
-                 {'name': 'A dirty pan', 'field': None}],
-             'actions': [],
-             'approvals': [BAKE_APPROVAL_DEF_DICT],
-             'incoming_stage': 1,
-             'outgoing_stage': 2,
-             'stage_type': 120},
-        ]
-    }
-    actual = processes.process_to_dict(process)
+    def test_process_to_dict(self):
+        """Test process to dict."""
+        process = processes.Process(
+            'Baking',
+            'This is how you make bread',
+            'Make it before you are hungry',
+            [
+                processes.ProcessStage(
+                    'Make dough',
+                    'Mix it and knead',
+                    [PI_COLD_DOUGH],
+                    [
+                        processes.Action(
+                            'Share kneading video',
+                            'https://example.com',
+                            [PI_COLD_DOUGH.name],
+                            [],
+                        )
+                    ],
+                    STAGE_BAKE_DOUGH,
+                ),
+                processes.ProcessStage(
+                    'Bake it',
+                    'Heat at 375 for 40 minutes',
+                    [PI_LOAF, PI_DIRTY_PAN],
+                    [],
+                    STAGE_BAKE_BAKE,
+                ),
+            ],
+        )
+        expected = {
+            'name': 'Baking',
+            'description': 'This is how you make bread',
+            'applicability': 'Make it before you are hungry',
+            'stages': [
+                {
+                    'name': 'Make dough',
+                    'description': 'Mix it and knead',
+                    'progress_items': [
+                        {
+                            'name': 'Cold dough',
+                            'field': 'dough',
+                            'description': 'Moist and plyable',
+                            'criteria': 'No longer sticky',
+                        },
+                    ],
+                    'actions': [
+                        {
+                            'name': 'Share kneading video',
+                            'url': 'https://example.com',
+                            'prerequisites': ['Cold dough'],
+                            'gate_types': [],
+                        }
+                    ],
+                    'stage_type': 110,
+                },
+                {
+                    'name': 'Bake it',
+                    'description': 'Heat at 375 for 40 minutes',
+                    'progress_items': [
+                        {
+                            'name': 'A loaf',
+                            'field': None,
+                            'description': None,
+                            'criteria': None,
+                        },
+                        {
+                            'name': 'A dirty pan',
+                            'field': None,
+                            'description': None,
+                            'criteria': None,
+                        },
+                    ],
+                    'actions': [],
+                    'stage_type': 120,
+                },
+            ],
+        }
+        actual = processes.process_to_dict(process)
 
-    self.assertEqual(expected['stages'][1]['approvals'],
-                     actual['stages'][1]['approvals'])
-    self.assertEqual(expected, actual)
-
-  def test_review_is_done(self):
-    """A review step is done if the review has completed or was N/a."""
-    self.assertFalse(processes.review_is_done(None))
-    self.assertFalse(processes.review_is_done(0))
-    self.assertFalse(processes.review_is_done(core_enums.REVIEW_PENDING))
-    self.assertFalse(processes.review_is_done(core_enums.REVIEW_ISSUES_OPEN))
-    self.assertTrue(processes.review_is_done(core_enums.REVIEW_ISSUES_ADDRESSED))
-    self.assertTrue(processes.review_is_done(core_enums.REVIEW_NA))
+        self.maxDiff = None
+        self.assertEqual(expected, actual)
 
 
 class ProcessesWellFormedTest(testing_config.CustomTestCase):
-  """Verify that our processes have no undefined references."""
+    """Verify that our processes have no undefined references."""
 
-  def verify_references_to_prerequisites(self, process):
-    progress_items_so_far = {}
-    for stage in process.stages:
-      progress_items_so_far.update({
-          pi.name: pi
-          for pi in stage.progress_items})
-      for action in stage.actions:
-        for prereq_name in action.prerequisites:
-          self.assertIn(prereq_name, progress_items_so_far)
-          self.assertTrue(progress_items_so_far[prereq_name].field)
+    def verify_references_to_prerequisites(self, process):
+        """Verify references to prerequisites."""
+        progress_items_so_far = {}
+        for stage in process.stages:
+            progress_items_so_far.update(
+                {pi.name: pi for pi in stage.progress_items}
+            )
+            for action in stage.actions:
+                for prereq_name in action.prerequisites:
+                    self.assertIn(prereq_name, progress_items_so_far)
+                    self.assertTrue(progress_items_so_far[prereq_name].field)
 
-  def test_BLINK_LAUNCH_PROCESS(self):
-    """Prerequisites in BLINK_LAUNCH_PROCESS are defined and actionable."""
-    self.verify_references_to_prerequisites(processes.BLINK_LAUNCH_PROCESS)
+    def test_BLINK_LAUNCH_PROCESS(self):
+        """Prerequisites in BLINK_LAUNCH_PROCESS are defined and actionable."""
+        self.verify_references_to_prerequisites(processes.BLINK_LAUNCH_PROCESS)
 
-  def test_BLINK_FAST_TRACK_PROCESS(self):
-    """Prerequisites in BLINK_FAST_TRACK_PROCESS are defined and actionable."""
-    self.verify_references_to_prerequisites(processes.BLINK_FAST_TRACK_PROCESS)
+    def test_BLINK_FAST_TRACK_PROCESS(self):
+        """Prerequisites in BLINK_FAST_TRACK_PROCESS are defined and actionable."""
+        self.verify_references_to_prerequisites(
+            processes.BLINK_FAST_TRACK_PROCESS
+        )
 
-  def test_PSA_ONLY_PROCESS(self):
-    """Prerequisites in PSA_ONLY_PROCESS are defined and actionable."""
-    self.verify_references_to_prerequisites(processes.PSA_ONLY_PROCESS)
+    def test_PSA_ONLY_PROCESS(self):
+        """Prerequisites in PSA_ONLY_PROCESS are defined and actionable."""
+        self.verify_references_to_prerequisites(processes.PSA_ONLY_PROCESS)
 
-  def test_DEPRECATION_PROCESS(self):
-    """Prerequisites in DEPRECATION_PROCESS are defined and actionable."""
-    self.verify_references_to_prerequisites(processes.DEPRECATION_PROCESS)
+    def test_DEPRECATION_PROCESS(self):
+        """Prerequisites in DEPRECATION_PROCESS are defined and actionable."""
+        self.verify_references_to_prerequisites(processes.DEPRECATION_PROCESS)
 
-  def test_ENTERPRISE_PROCESS(self):
-    """Prerequisites in NTERPRISE_PROCESS are defined and actionable."""
-    self.verify_references_to_prerequisites(processes.ENTERPRISE_PROCESS)
+    def test_ENTERPRISE_PROCESS(self):
+        """Prerequisites in NTERPRISE_PROCESS are defined and actionable."""
+        self.verify_references_to_prerequisites(processes.ENTERPRISE_PROCESS)
+
+    def test_extension_actions_are_associated_with_extension_gate(self):
+        """Extension email actions are displayed in the API owners gate."""
+        process_and_stage_types = [
+            (
+                processes.BLINK_LAUNCH_PROCESS,
+                core_enums.STAGE_BLINK_EXTEND_ORIGIN_TRIAL,
+            ),
+            (
+                processes.BLINK_FAST_TRACK_PROCESS,
+                core_enums.STAGE_FAST_EXTEND_ORIGIN_TRIAL,
+            ),
+            (
+                processes.DEPRECATION_PROCESS,
+                core_enums.STAGE_DEP_EXTEND_DEPRECATION_TRIAL,
+            ),
+        ]
+
+        for process, stage_type in process_and_stage_types:
+            with self.subTest(process=process.name):
+                stage = next(
+                    stage
+                    for stage in process.stages
+                    if stage.stage_type == stage_type
+                )
+                self.assertEqual(1, len(stage.actions))
+                self.assertIn(
+                    core_enums.GATE_API_EXTEND_ORIGIN_TRIAL,
+                    stage.actions[0].gate_types,
+                )
+
+    def test_deprecation_dq_actions(self):
+        """Deprecation plan and shipping stages have DQ review actions with expected checklists."""
+        plan_stage = next(
+            stage
+            for stage in processes.DEPRECATION_PROCESS.stages
+            if stage.stage_type == core_enums.STAGE_DEP_PLAN
+        )
+        plan_dq_actions = [
+            action
+            for action in plan_stage.actions
+            if core_enums.GATE_DQ_PLAN in action.gate_types
+        ]
+        self.assertEqual(1, len(plan_dq_actions))
+        self.assertEqual(
+            [pi.name for pi in processes.DQ_CHECKLIST_DEP_PLAN],
+            plan_dq_actions[0].prerequisites,
+        )
+        for dev_pi in processes.PI_GROUP_DEVS_DEP:
+            self.assertNotIn(dev_pi, processes.DQ_CHECKLIST_DEP_PLAN)
+
+        ship_stage = next(
+            stage
+            for stage in processes.DEPRECATION_PROCESS.stages
+            if stage.stage_type == core_enums.STAGE_DEP_SHIPPING
+        )
+        ship_dq_actions = [
+            action
+            for action in ship_stage.actions
+            if core_enums.GATE_DQ_SHIP in action.gate_types
+        ]
+        self.assertEqual(1, len(ship_dq_actions))
+        self.assertEqual(
+            [pi.name for pi in processes.DQ_CHECKLIST_DEP_SHIP],
+            ship_dq_actions[0].prerequisites,
+        )
+        for dev_pi in processes.PI_GROUP_DEVS_DEP:
+            self.assertIn(dev_pi, processes.DQ_CHECKLIST_DEP_SHIP)
+        for milestone_pi in processes.PI_GROUP_MILESTONES:
+            self.assertIn(milestone_pi, processes.DQ_CHECKLIST_DEP_SHIP)
+
+    def test_progress_items_have_detectors(self):
+        """Every ProgressItem with a field across all processes has a detector in PROGRESS_DETECTORS."""
+        from internals import progress
+
+        for process in processes.ALL_PROCESSES.values():
+            for stage in process.stages:
+                for pi in stage.progress_items:
+                    if pi.field:
+                        self.assertIn(pi.name, progress.PROGRESS_DETECTORS)
 
 
-class ProgressDetectorsTest(testing_config.CustomTestCase):
+class WriteGatesAndStagesForFeatureTest(testing_config.CustomTestCase):
+    """Tests for write_gates_and_stages_for_feature."""
 
-  def setUp(self):
-    self.feature_1 = core_models.FeatureEntry(
-        name='feature one', summary='sum', category=1,
-        intent_stage=core_enums.INTENT_IMPLEMENT, feature_type=0)
-    self.feature_1.put()
-    stage_types = [110, 120, 130, 140, 150, 151, 160, 1061]
-    self.stages: list[core_models.Stage] = []
-    for s_type in stage_types:
-      stage = core_models.Stage(feature_id=self.feature_1.key.integer_id(),
-          stage_type=s_type)
-      stage.put()
-      self.stages.append(stage)
-    self.stages_dict = stage_helpers.get_feature_stages(
-        self.feature_1.key.integer_id())
+    def tearDown(self):
+        """Clean up the test environment."""
+        from internals.review_models import Gate
 
-  def tearDown(self):
-    self.feature_1.key.delete()
-    for stage in self.stages:
-      stage.key.delete()
+        kinds = [core_models.FeatureEntry, core_models.Stage, Gate]
+        for kind in kinds:
+            entities = kind.query().fetch()
+            for entity in entities:
+                entity.key.delete()
 
-  def test_initial_public_proposal_url(self):
-    detector = processes.PROGRESS_DETECTORS['Initial public proposal']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.initial_public_proposal_url = 'http://example.com'
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
+    def test_write_gates_and_stages_for_feature(self):
+        """Test that stages and gates are created for a feature."""
+        from internals.review_models import Gate
 
-  def test_explainer(self):
-    detector = processes.PROGRESS_DETECTORS['Explainer']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.explainer_links = ['http://example.com']
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
+        feature = core_models.FeatureEntry(
+            name='feature one',
+            summary='sum',
+            category=1,
+            feature_type=0,
+        )
+        feature.put()
+        feature_id = feature.key.integer_id()
 
-  def test_security_review_completed(self):
-    detector = processes.PROGRESS_DETECTORS['Security review issues addressed']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.security_review_status = core_enums.REVIEW_ISSUES_ADDRESSED
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
+        processes.write_gates_and_stages_for_feature(feature_id, 0)
 
-  def test_privacy_review_completed(self):
-    detector = processes.PROGRESS_DETECTORS['Privacy review issues addressed']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.privacy_review_status = core_enums.REVIEW_ISSUES_ADDRESSED
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_intent_to_prototype_email(self):
-    detector = processes.PROGRESS_DETECTORS['Intent to Prototype email']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[120][0].intent_thread_url = 'http://example.com/prototype'
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_intent_to_ship_email(self):
-    detector = processes.PROGRESS_DETECTORS['Intent to Ship email']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[160][0].intent_thread_url = 'http://example.com/ship'
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_ready_for_trial_email(self):
-    detector = processes.PROGRESS_DETECTORS['Ready for Developer Testing email']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[130][0].announcement_url = 'http://example.com/trial_ready'
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_intent_to_experiment_email(self):
-    detector = processes.PROGRESS_DETECTORS['Intent to Experiment email']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[150][0].intent_thread_url = 'http://example.com/ot'
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_samples(self):
-    detector = processes.PROGRESS_DETECTORS['Samples']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.sample_links = ['http://example.com']
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_doc_links(self):
-    detector = processes.PROGRESS_DETECTORS['Doc links']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.doc_links = ['http://example.com']
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_tag_review_requested(self):
-    detector = processes.PROGRESS_DETECTORS['TAG review requested']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.tag_review = 'http://example.com'
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_tag_review_completed(self):
-    detector = processes.PROGRESS_DETECTORS['TAG review issues addressed']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.tag_review_status = core_enums.REVIEW_ISSUES_ADDRESSED
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_web_dev_signals(self):
-    detector = processes.PROGRESS_DETECTORS['Web developer signals']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.web_dev_views = core_enums.PUBLIC_SUPPORT
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_vendor_signals(self):
-    detector = processes.PROGRESS_DETECTORS['Vendor signals']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.ff_views = core_enums.PUBLIC_SUPPORT
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_estimated_target_milestone(self):
-    detector = processes.PROGRESS_DETECTORS['Estimated target milestone']
-    self.stages_dict[160][0].milestones = core_models.MilestoneSet()
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[160][0].milestones.desktop_first = 99
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_code_in_chromium(self):
-    detector = processes.PROGRESS_DETECTORS['Code in Chromium']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.impl_status_chrome = core_enums.ENABLED_BY_DEFAULT
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_motivation(self):
-    detector = processes.PROGRESS_DETECTORS['Motivation']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.motivation = 'test motivation'
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_code_removed(self):
-    detector = processes.PROGRESS_DETECTORS['Code removed']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.feature_1.impl_status_chrome = core_enums.REMOVED
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_rollout_impact(self):
-    detector = processes.PROGRESS_DETECTORS['Rollout impact']
-    # There is always a value for this
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[1061][0].rollout_impact = 1
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_rollout_milestone(self):
-    detector = processes.PROGRESS_DETECTORS['Rollout milestone']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[1061][0].rollout_milestone = 99
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_rollout_platforms(self):
-    detector = processes.PROGRESS_DETECTORS['Rollout platforms']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[1061][0].rollout_platforms = ['iOS', 'Android']
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_rollout_details(self):
-    detector = processes.PROGRESS_DETECTORS['Rollout details']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[1061][0].rollout_details = 'Details'
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
-
-  def test_enterprise_policies(self):
-    detector = processes.PROGRESS_DETECTORS['Enterprise policies']
-    self.assertFalse(detector(self.feature_1, self.stages_dict))
-    self.stages_dict[1061][0].enterprise_policies = ['Policy1', 'Policy2']
-    self.assertTrue(detector(self.feature_1, self.stages_dict))
+        stages = core_models.Stage.query().fetch()
+        gates = Gate.query().fetch()
+        self.assertEqual(len(stages), 6)
+        self.assertEqual(len(gates), 13)

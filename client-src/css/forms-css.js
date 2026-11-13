@@ -1,3 +1,19 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import {css} from 'lit';
 import {VARS} from './_vars-css.js';
 
@@ -59,10 +75,6 @@ export const FORM_STYLES = [
       padding: 7px;
     }
 
-    li {
-      list-style: none;
-    }
-
     form[name="feature_form"] h3 {
       margin: var(--content-padding-half) 0;
     }
@@ -81,7 +93,7 @@ export const FORM_STYLES = [
     .fade-in {
       animation:fadeIn 0.5s linear;
     }
-    
+
     @keyframes fadeIn {
       0% {
         opacity:0
@@ -191,11 +203,6 @@ export const FORM_STYLES = [
       margin: 1em 0;
     }
 
-    chromedash-form-field .helptext li {
-      list-style: circle;
-      margin-left: 2em;
-    }
-
     chromedash-form-field .helptext blockquote {
       margin: 1em;
       border: 1px solid lightgrey;
@@ -234,7 +241,7 @@ export const FORM_STYLES = [
     chromedash-form-field td.extrahelp {
       padding-left: 2em;
     }
-    chromedash-form-field .extrahelp > span {
+    chromedash-form-field .extrahelp > span, chromedash-form-field .webdx > span {
       margin: 0;
     }
 
@@ -262,6 +269,27 @@ export const FORM_STYLES = [
       box-shadow: 0 0 0 3px #0ea5e966;
     }
 
+    chromedash-form-field .form-field-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+    }
+    chromedash-form-field .usage-tag {
+      padding: 2px 6px;
+      margin-inline-start: 4px;
+      border-radius: 12px;
+      font-size: 0.85em;
+      font-weight: 700;
+      text-align: center;
+      white-space: nowrap;
+      vertical-align: middle;
+      cursor: help;
+      color: #424242;
+      background-color: #f5f5f5;
+      border: 1px solid #bdbdbd;
+    }
+
     sl-skeleton {
       margin-bottom: 1em;
       width: 60%;
@@ -274,5 +302,15 @@ export const FORM_STYLES = [
       margin-top: 1em;
       width: 30%;
       height: 1.5em;
+    }
+
+    .choices label {
+      font-weight: bold;
+    }
+    .choices div {
+      margin-top: 1em;
+    }
+    .choices p {
+      margin: 0.5em 1.5em 1em;
     }
   `];

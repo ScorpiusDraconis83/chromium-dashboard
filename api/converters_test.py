@@ -12,566 +12,1063 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import testing_config  # Must be imported before the module under test.
-from unittest import mock
+"""Tests for the converters module, verifying correct transformation of data models to dictionaries."""
 
 from datetime import datetime
+from typing import Any, Iterable, Mapping
+from unittest import mock
 
+import yaml
+
+import testing_config  # Must be imported before the module under test.
 from api import converters
-from internals.core_models import FeatureEntry, MilestoneSet, Stage
-from internals.review_models import Vote, Gate
-from internals import approval_defs
+from internals import approval_defs, core_enums
+from internals.core_models import (
+    FeatureEntry,
+    FeatureSummaryProgressStep,
+    FeatureSummarySuggestion,
+    MilestoneCuration,
+    MilestoneSet,
+    Stage,
+)
+from internals.review_models import Gate, SurveyAnswers, Vote
 
 
 class DelNoneTest(testing_config.CustomTestCase):
+    """Tests for del_none function."""
 
-  def test_del_none(self):
-    d = {}
-    self.assertEqual(
-        {},
-        converters.del_none(d))
+    def test_del_none(self):
+        """Test del_none."""
+        d = {}
+        self.assertEqual({}, converters.del_none(d))
 
-    d = {1: 'one', 2: None, 3: {33: None}, 4:{44: 44, 45: None}}
-    self.assertEqual(
-        {1: 'one', 3: {}, 4: {44: 44}},
-        converters.del_none(d))
+        d = {1: 'one', 2: None, 3: {33: None}, 4: {44: 44, 45: None}}
+        self.assertEqual({1: 'one', 3: {}, 4: {44: 44}}, converters.del_none(d))
 
 
 class FeatureConvertersTest(testing_config.CustomTestCase):
+    """Tests for feature converters."""
 
-  def setUp(self):
-    self.date = datetime.now()
-    self.fe_1 = FeatureEntry(
-        id=123, name='feature template', summary='sum',
-        creator_email='creator@example.com',
-        updater_email='updater@example.com', category=1,
-        owner_emails=['feature_owner@example.com'], feature_type=0,
-        editor_emails=['feature_editor@example.com', 'owner_1@example.com'],
-        impl_status_chrome=5, blink_components=['Blink'],
-        spec_link='https://example.com/spec',
-        sample_links=['https://example.com/samples'],
-        screenshot_links=['https://example.com/screenshot'],
-        first_enterprise_notification_milestone=100, standard_maturity=1,
-        ff_views=5, ff_views_link='https://example.com/ff_views',
-        ff_views_notes='ff notes', safari_views=1,
-        bug_url='https://example.com/bug',
-        launch_bug_url='https://example.com/launch_bug',
-        safari_views_link='https://example.com/safari_views',
-        safari_views_notes='safari notes', web_dev_views=1,
-        web_dev_views_link='https://example.com/web_dev',
-        doc_links=['https://example.com/docs'], other_views_notes='other notes',
-        devrel_emails=['devrel@example.com'], prefixed=False,
-        intent_stage=1, tag_review_status=1, security_review_status=2,
-        privacy_review_status=1, feature_notes='notes',
-        updated=self.date, accurate_as_of=self.date, created=self.date)
-    self.fe_1.put()
+    def setUp(self):
+        """Set up the test."""
+        self.date = datetime.now()
+        self.fe_1 = FeatureEntry(
+            id=123,
+            name='feature template',
+            summary='sum',
+            creator_email='creator@example.com',
+            updater_email='updater@example.com',
+            category=1,
+            owner_emails=['feature_owner@example.com'],
+            feature_type=0,
+            editor_emails=['feature_editor@example.com', 'owner_1@example.com'],
+            impl_status_chrome=5,
+            blink_components=['Blink'],
+            shipping_year=2024,
+            spec_link='https://example.com/spec',
+            sample_links=['https://example.com/samples'],
+            screenshot_links=['https://example.com/screenshot'],
+            first_enterprise_notification_milestone=100,
+            standard_maturity=1,
+            ff_views=5,
+            ff_views_link='https://example.com/ff_views',
+            ff_views_notes='ff notes',
+            safari_views=1,
+            bug_url='https://example.com/bug',
+            launch_bug_url='https://example.com/launch_bug',
+            safari_views_link='https://example.com/safari_views',
+            safari_views_notes='safari notes',
+            web_dev_views=1,
+            web_dev_views_link='https://example.com/web_dev',
+            doc_links=['https://example.com/docs'],
+            other_views_notes='other notes',
+            devrel_emails=['devrel@example.com'],
+            prefixed=False,
+            intent_stage=1,
+            tag_review_status=1,
+            security_review_status=2,
+            privacy_review_status=1,
+            security_continuity_id=123,
+            security_launch_issue_id=456,
+            feature_notes='notes',
+            updated=self.date,
+            accurate_as_of=self.date,
+            created=self.date,
+            web_feature='css',
+            webdx_usecounter_enum='321',
+        )
+        self.fe_1.put()
 
-    # Write stages for the feature.
-    stage_types = [110, 120, 130, 140, 150, 151, 160, 1061]
-    for s_type in stage_types:
-      s = Stage(feature_id=self.fe_1.key.integer_id(), stage_type=s_type,
-          milestones=MilestoneSet(desktop_first=1,
-              android_first=1, desktop_last=2),
-          intent_thread_url=f'https://example.com/{s_type}')
-      # Add stage-specific fields based on the stage ID.
-      # 150 is the ID associated with the origin trial stage for feature type 0.
-      if s_type == 150:
-        s.experiment_goals = 'goals'
-        s.experiment_risks = 'risks'
-        s.announcement_url = 'https://example.com/announce'
-      # 151 is the stage ID associated with the origin trial extension.
-      elif s_type == 151:
-        s.experiment_extension_reason = 'reason'
-      # 151 is the ID associated with the shipping stage.
-      elif s_type == 160:
-        s.finch_url = 'https://example.com/finch'
-      s.put()
-    self.maxDiff = None
+        # Write stages for the feature.
+        stage_types = [110, 120, 130, 140, 150, 151, 160, 1061]
+        for s_type in stage_types:
+            s = Stage(
+                feature_id=self.fe_1.key.integer_id(),
+                stage_type=s_type,
+                milestones=MilestoneSet(
+                    desktop_first=1, android_first=1, desktop_last=2
+                ),
+                intent_thread_url=f'https://example.com/{s_type}',
+            )
+            # Add stage-specific fields based on the stage ID.
+            # 150 is the ID associated with the origin trial stage for feature type 0.
+            if s_type == 150:
+                s.experiment_goals = 'goals'
+                s.experiment_risks = 'risks'
+                s.announcement_url = 'https://example.com/announce'
+            # 151 is the stage ID associated with the origin trial extension.
+            elif s_type == 151:
+                s.experiment_extension_reason = 'reason'
+            # 151 is the ID associated with the shipping stage.
+            elif s_type == 160:
+                s.finch_url = 'https://example.com/finch'
+            s.put()
+        self.maxDiff = None
 
-  def tearDown(self) -> None:
-    self.fe_1.key.delete()
-    for s in Stage.query():
-      s.key.delete()
+    def tearDown(self) -> None:
+        """Tear down the test."""
+        self.fe_1.key.delete()
+        for s in Stage.query():
+            s.key.delete()
 
-  def test_feature_entry_to_json_basic__normal(self):
-    """Converts feature entry to basic JSON dictionary."""
-    result = converters.feature_entry_to_json_basic(self.fe_1)
-    expected_date = str(self.date)
-    expected = {
-      'id': 123,
-      'name': 'feature template',
-      'summary': 'sum',
-      'unlisted': False,
-      'blink_components': ['Blink'],
-      'first_enterprise_notification_milestone': 100,
-      'breaking_change': False,
-      'is_released': True,
-      'milestone': None,
-      'resources': {
-        'samples': ['https://example.com/samples'],
-        'docs': ['https://example.com/docs'],
-      },
-      'created': {
-        'by': 'creator@example.com',
-        'when': expected_date
-      },
-      'updated': {
-        'by': 'updater@example.com',
-        'when': expected_date
-      },
-      'standards': {
-        'spec': 'https://example.com/spec',
-        'maturity': {
-          'text': 'Unknown standards status - check spec link for status',
-          'short_text': 'Unknown status',
-          'val': 1,
-        },
-      },
-      'browsers': {
-        'chrome': {
-          'bug': 'https://example.com/bug',
-          'blink_components': ['Blink'],
-          'devrel':['devrel@example.com'],
-          'owners':['feature_owner@example.com'],
-          'origintrial': False,
-          'intervention': False,
-          'prefixed': False,
-          'flag': False,
-          'status': {
-            'text':'Enabled by default',
-            'val': 5
-          }
-        },
-        'ff': {
-          'view': {
-          'text': 'No signal',
-          'val': 5,
-          'url': 'https://example.com/ff_views',
-          'notes': 'ff notes',
-          }
-        },
-        'safari': {
-          'view': {
-          'text': 'Shipped/Shipping',
-          'val': 1,
-          'url': 'https://example.com/safari_views',
-          'notes': 'safari notes',
-          }
-        },
-        'webdev': {
-          'view': {
-          'text': 'Strongly positive',
-          'val': 1,
-          'url': 'https://example.com/web_dev',
-          'notes': None,
-          }
-        },
-        'other': {
-          'view': {
-            'notes': 'other notes',
-          }
+    def test_feature_entry_to_json_basic__normal(self):
+        """Converts feature entry to basic JSON dictionary."""
+        result = converters.feature_entry_to_json_basic(self.fe_1)
+        expected_date = str(self.date)
+        expected = {
+            'id': 123,
+            'name': 'feature template',
+            'summary': 'sum',
+            'feature_type_int': 0,
+            'unlisted': False,
+            'blink_components': ['Blink'],
+            'first_enterprise_notification_milestone': 100,
+            'enterprise_impact': core_enums.ENTERPRISE_IMPACT_NONE,
+            'enterprise_product_category': 0,
+            'breaking_change': False,
+            'is_released': True,
+            'milestone': None,
+            'resources': {
+                'samples': ['https://example.com/samples'],
+                'docs': ['https://example.com/docs'],
+            },
+            'confidential': False,
+            'creator': 'creator@example.com',
+            'editors': ['feature_editor@example.com', 'owner_1@example.com'],
+            'owners': ['feature_owner@example.com'],
+            'created': {'by': 'creator@example.com', 'when': expected_date},
+            'updated': {'by': 'updater@example.com', 'when': expected_date},
+            'accurate_as_of': expected_date,
+            'standards': {
+                'spec': 'https://example.com/spec',
+                'maturity': {
+                    'text': 'Unknown standards status - check spec link for status',
+                    'short_text': 'Unknown status',
+                    'val': 1,
+                },
+            },
+            'browsers': {
+                'chrome': {
+                    'bug': 'https://example.com/bug',
+                    'blink_components': ['Blink'],
+                    'devrel': ['devrel@example.com'],
+                    'owners': ['feature_owner@example.com'],
+                    'origintrial': False,
+                    'prefixed': False,
+                    'flag': False,
+                    'status': {'text': 'Enabled by default', 'val': 5},
+                    'announced': False,
+                },
+                'ff': {
+                    'view': {
+                        'text': 'No signal',
+                        'val': 5,
+                        'url': 'https://example.com/ff_views',
+                        'notes': 'ff notes',
+                    }
+                },
+                'safari': {
+                    'view': {
+                        'text': 'Shipped/Shipping',
+                        'val': 1,
+                        'url': 'https://example.com/safari_views',
+                        'notes': 'safari notes',
+                    }
+                },
+                'webdev': {
+                    'view': {
+                        'text': 'Strongly positive',
+                        'val': 1,
+                        'url': 'https://example.com/web_dev',
+                        'notes': None,
+                    }
+                },
+                'other': {
+                    'view': {
+                        'notes': 'other notes',
+                    }
+                },
+            },
         }
-      }
-    }
-    self.assertEqual(result, expected)
+        self.assertEqual(result, expected)
 
-  def test_feature_entry_to_json_basic__feature_release(self):
-    """Converts released feature entry to basic JSON dictionary."""
-    stages = [Stage(feature_id=self.fe_1.key.integer_id(), stage_type=160,
-          milestones=MilestoneSet(desktop_first=1,android_first=1, desktop_last=2))]
-    result = converters.feature_entry_to_json_basic(self.fe_1, stages)
-    expected_date = str(self.date)
-    expected = {
-      'id': 123,
-      'name': 'feature template',
-      'summary': 'sum',
-      'unlisted': False,
-      'blink_components': ['Blink'],
-      'first_enterprise_notification_milestone': 100,
-      'breaking_change': False,
-      'is_released': True,
-      'milestone': True,
-      'resources': {
-        'samples': ['https://example.com/samples'],
-        'docs': ['https://example.com/docs'],
-      },
-      'created': {
-        'by': 'creator@example.com',
-        'when': expected_date
-      },
-      'updated': {
-        'by': 'updater@example.com',
-        'when': expected_date
-      },
-      'standards': {
-        'spec': 'https://example.com/spec',
-        'maturity': {
-          'text': 'Unknown standards status - check spec link for status',
-          'short_text': 'Unknown status',
-          'val': 1,
-        },
-      },
-      'browsers': {
-        'chrome': {
-          'bug': 'https://example.com/bug',
-          'blink_components': ['Blink'],
-          'devrel':['devrel@example.com'],
-          'owners':['feature_owner@example.com'],
-          'origintrial': False,
-          'intervention': False,
-          'prefixed': False,
-          'flag': False,
-          'status': {
-            'text':'Enabled by default',
-            'val': 5
-          }
-        },
-        'ff': {
-          'view': {
-          'text': 'No signal',
-          'val': 5,
-          'url': 'https://example.com/ff_views',
-          'notes': 'ff notes',
-          }
-        },
-        'safari': {
-          'view': {
-          'text': 'Shipped/Shipping',
-          'val': 1,
-          'url': 'https://example.com/safari_views',
-          'notes': 'safari notes',
-          }
-        },
-        'webdev': {
-          'view': {
-          'text': 'Strongly positive',
-          'val': 1,
-          'url': 'https://example.com/web_dev',
-          'notes': None,
-          }
-        },
-        'other': {
-          'view': {
-            'notes': 'other notes',
-          },
-        },
-      },
-    }
-    self.assertEqual(result, expected)
+    def test_feature_entry_to_json_basic__feature_release(self):
+        """Converts released feature entry to basic JSON dictionary."""
+        stages = [
+            Stage(
+                feature_id=self.fe_1.key.integer_id(),
+                stage_type=160,
+                milestones=MilestoneSet(
+                    desktop_first=1, android_first=1, desktop_last=2
+                ),
+            )
+        ]  # noqa: E501
+        result = converters.feature_entry_to_json_basic(self.fe_1, stages)
+        expected_date = str(self.date)
+        expected = {
+            'id': 123,
+            'name': 'feature template',
+            'summary': 'sum',
+            'feature_type_int': 0,
+            'unlisted': False,
+            'blink_components': ['Blink'],
+            'first_enterprise_notification_milestone': 100,
+            'enterprise_impact': core_enums.ENTERPRISE_IMPACT_NONE,
+            'enterprise_product_category': 0,
+            'breaking_change': False,
+            'is_released': True,
+            'milestone': 1,
+            'resources': {
+                'samples': ['https://example.com/samples'],
+                'docs': ['https://example.com/docs'],
+            },
+            'confidential': False,
+            'creator': 'creator@example.com',
+            'editors': ['feature_editor@example.com', 'owner_1@example.com'],
+            'owners': ['feature_owner@example.com'],
+            'created': {'by': 'creator@example.com', 'when': expected_date},
+            'updated': {'by': 'updater@example.com', 'when': expected_date},
+            'accurate_as_of': expected_date,
+            'standards': {
+                'spec': 'https://example.com/spec',
+                'maturity': {
+                    'text': 'Unknown standards status - check spec link for status',
+                    'short_text': 'Unknown status',
+                    'val': 1,
+                },
+            },
+            'browsers': {
+                'chrome': {
+                    'bug': 'https://example.com/bug',
+                    'blink_components': ['Blink'],
+                    'devrel': ['devrel@example.com'],
+                    'owners': ['feature_owner@example.com'],
+                    'origintrial': False,
+                    'prefixed': False,
+                    'flag': False,
+                    'status': {'text': 'Enabled by default', 'val': 5},
+                    'announced': True,
+                },
+                'ff': {
+                    'view': {
+                        'text': 'No signal',
+                        'val': 5,
+                        'url': 'https://example.com/ff_views',
+                        'notes': 'ff notes',
+                    }
+                },
+                'safari': {
+                    'view': {
+                        'text': 'Shipped/Shipping',
+                        'val': 1,
+                        'url': 'https://example.com/safari_views',
+                        'notes': 'safari notes',
+                    }
+                },
+                'webdev': {
+                    'view': {
+                        'text': 'Strongly positive',
+                        'val': 1,
+                        'url': 'https://example.com/web_dev',
+                        'notes': None,
+                    }
+                },
+                'other': {
+                    'view': {
+                        'notes': 'other notes',
+                    },
+                },
+            },
+        }
+        self.assertEqual(result, expected)
 
-  def test_feature_entry_to_json_basic__bad_view_field(self):
-    """Function handles if any views fields have deprecated values."""
-    # Deprecated views enum value.
-    self.fe_1.ff_views = 4
-    self.fe_1.safari_views = 4
-    self.fe_1.put()
-    result = converters.feature_entry_to_json_basic(self.fe_1)
-    self.assertEqual(5, result['browsers']['safari']['view']['val'])
-    self.assertEqual(5, result['browsers']['ff']['view']['val'])
+    def test_feature_entry_to_json_basic__bad_view_field(self):
+        """Function handles if any views fields have deprecated values."""
+        # Deprecated views enum value.
+        self.fe_1.ff_views = 4
+        self.fe_1.safari_views = 4
+        self.fe_1.put()
+        result = converters.feature_entry_to_json_basic(self.fe_1)
+        self.assertEqual(5, result['browsers']['safari']['view']['val'])
+        self.assertEqual(5, result['browsers']['ff']['view']['val'])
 
-  def test_feature_entry_to_json_basic__empty_feature(self):
-    """Function handles if FeatureEntry key is None."""
-    empty_fe = FeatureEntry()
+    def test_feature_entry_to_json_basic__empty_feature(self):
+        """Function handles if FeatureEntry key is None."""
+        empty_fe = FeatureEntry()
 
-    result = converters.feature_entry_to_json_basic(empty_fe)
+        result = converters.feature_entry_to_json_basic(empty_fe)
 
-    self.assertEqual(result, {})
+        self.assertEqual(result, {})
 
-  def test_feature_entry_to_json_verbose__normal(self):
-    """Converts feature entry to complete JSON with stage data."""
-    result = converters.feature_entry_to_json_verbose(self.fe_1)
-    # Remove the stages list for a more apt comparison.
-    result.pop('stages')
+    def test_feature_entry_to_json_verbose__normal(self):
+        """Converts feature entry to complete JSON with stage data."""
+        result = converters.feature_entry_to_json_verbose(self.fe_1)
+        # Remove the stages list for a more apt comparison.
+        result.pop('stages')
 
-    expected = {
-      'id': 123,
-      'name': 'feature template',
-      'summary': 'sum',
-      'unlisted': False,
-      'api_spec': False,
-      'breaking_change': False,
-      'is_released': True,
-      'category': 'Web Components',
-      'category_int': 1,
-      'feature_type': 'New feature incubation',
-      'feature_type_int': 0,
-      'is_enterprise_feature': False,
-      'intent_stage': 'Start prototyping',
-      'intent_stage_int': 1,
-      'star_count': 0,
-      'bug_url': 'https://example.com/bug',
-      'launch_bug_url': 'https://example.com/launch_bug',
-      'deleted': False,
-      'devrel_emails': ['devrel@example.com'],
-      'doc_links': ['https://example.com/docs'],
-      'prefixed': False,
-      'requires_embedder_support': False,
-      'spec_link': 'https://example.com/spec',
-      'sample_links': ['https://example.com/samples'],
-      'screenshot_links': ['https://example.com/screenshot'],
-      'first_enterprise_notification_milestone': 100,
-      'created': {
-        'by': 'creator@example.com',
-        'when': str(self.date)
-      },
-      'updated': {
-        'by': 'updater@example.com',
-        'when': str(self.date)
-      },
-      'accurate_as_of': str(self.date),
-      'resources': {
-        'samples': ['https://example.com/samples'],
-        'docs': ['https://example.com/docs'],
-      },
-      'standards': {
-        'spec': 'https://example.com/spec',
-        'maturity': {
-          'text': 'Unknown standards status - check spec link for status',
-          'short_text': 'Unknown status',
-          'val': 1,
-        },
-      },
+        expected = {
+            'id': 123,
+            'name': 'feature template',
+            'summary': 'sum',
+            'markdown_fields': [],
+            'unlisted': False,
+            'api_spec': False,
+            'automation_spec': False,
+            'enterprise_impact': core_enums.ENTERPRISE_IMPACT_NONE,
+            'enterprise_product_category': 0,
+            'is_releasenotes_content_reviewed': False,
+            'is_releasenotes_publish_ready': False,
+            'shipping_year': 2024,
+            'breaking_change': False,
+            'is_released': True,
+            'category': 'Web Components',
+            'category_int': 1,
+            'feature_type': 'New or changed feature',
+            'feature_type_int': 0,
+            'is_enterprise_feature': False,
+            'intent_stage': 'Start prototyping',
+            'intent_stage_int': 1,
+            'star_count': 0,
+            'bug_url': 'https://example.com/bug',
+            'launch_bug_url': 'https://example.com/launch_bug',
+            'deleted': False,
+            'devrel_emails': ['devrel@example.com'],
+            'doc_links': ['https://example.com/docs'],
+            'prefixed': False,
+            'requires_embedder_support': False,
+            'spec_link': 'https://example.com/spec',
+            'sample_links': ['https://example.com/samples'],
+            'screenshot_links': ['https://example.com/screenshot'],
+            'first_enterprise_notification_milestone': 100,
+            'created': {'by': 'creator@example.com', 'when': str(self.date)},
+            'updated': {'by': 'updater@example.com', 'when': str(self.date)},
+            'accurate_as_of': str(self.date),
+            'resources': {
+                'samples': ['https://example.com/samples'],
+                'docs': ['https://example.com/docs'],
+            },
+            'standards': {
+                'spec': 'https://example.com/spec',
+                'maturity': {
+                    'text': 'Unknown standards status - check spec link for status',
+                    'short_text': 'Unknown status',
+                    'val': 1,
+                },
+            },
+            'activation_risks': None,
+            'active_stage_id': None,
+            'adoption_expectation': None,
+            'adoption_plan': None,
+            'all_platforms': None,
+            'all_platforms_descr': None,
+            'anticipated_spec_changes': None,
+            'availability_expectation': None,
+            'blink_components': ['Blink'],
+            'cc_emails': [],
+            'cc_recipients': [],
+            'creator_email': 'creator@example.com',
+            'debuggability': None,
+            'devtrial_instructions': None,
+            'editor_emails': [
+                'feature_editor@example.com',
+                'owner_1@example.com',
+            ],
+            'enterprise_feature_categories': [],
+            'ergonomics_risks': None,
+            'experiment_timeline': None,
+            'explainer_links': [],
+            'feature_notes': 'notes',
+            'web_feature': 'css',
+            'is_official_web_feature': True,
+            'webdx_usecounter_enum': '321',
+            'ff_views': 5,
+            'flag_name': None,
+            'finch_name': None,
+            'non_finch_justification': None,
+            'initial_public_proposal_url': None,
+            'interop_compat_risks': None,
+            'measurement': None,
+            'motivation': None,
+            'new_crbug_url': 'https://bugs.chromium.org/p/chromium/issues/entry?components=Blink&cc=feature_owner@example.com',
+            'non_oss_deps': None,
+            'ongoing_constraints': None,
+            'rollout_plan': core_enums.ROLLOUT_100,
+            'rollout_plan_displayname': core_enums.ROLLOUT_PLAN_DISPLAYNAMES[
+                core_enums.ROLLOUT_100
+            ],
+            'owner_emails': ['feature_owner@example.com'],
+            'safari_views': 1,
+            'search_tags': [],
+            'security_risks': None,
+            'spec_mentor_emails': [],
+            'spec_mentors': [],
+            'tag_review': None,
+            'tags': [],
+            'updated_display': None,
+            'updater_email': 'updater@example.com',
+            'web_dev_views': 1,
+            'webview_risks': None,
+            'wpt': None,
+            'wpt_descr': None,
+            'ai_test_eval_report': None,
+            'ai_test_eval_run_status': None,
+            'ai_test_eval_status_timestamp': None,
+            'tag_review_status': 'Pending',
+            'tag_review_status_int': 1,
+            'security_review_status': 'Issues open',
+            'security_review_status_int': 2,
+            'privacy_review_status': 'Pending',
+            'privacy_review_status_int': 1,
+            'security_continuity_id': 123,
+            'security_launch_issue_id': 456,
+            'editors': ['feature_editor@example.com', 'owner_1@example.com'],
+            'creator': 'creator@example.com',
+            'comments': 'notes',
+            'confidential': False,
+            'browsers': {
+                'chrome': {
+                    'bug': 'https://example.com/bug',
+                    'blink_components': ['Blink'],
+                    'devrel': ['devrel@example.com'],
+                    'owners': ['feature_owner@example.com'],
+                    'desktop': 1,
+                    'android': 1,
+                    'ios': None,
+                    'origintrial': False,
+                    'prefixed': False,
+                    'flag': False,
+                    'webview': None,
+                    'status': {
+                        'milestone_str': '1',
+                        'text': 'Enabled by default',
+                        'val': 5,
+                    },
+                    'announced': True,
+                },
+                'ff': {
+                    'view': {
+                        'text': 'No signal',
+                        'val': 5,
+                        'url': 'https://example.com/ff_views',
+                        'notes': 'ff notes',
+                    }
+                },
+                'safari': {
+                    'view': {
+                        'text': 'Shipped/Shipping',
+                        'val': 1,
+                        'url': 'https://example.com/safari_views',
+                        'notes': 'safari notes',
+                    }
+                },
+                'webdev': {
+                    'view': {
+                        'notes': None,
+                        'text': 'Strongly positive',
+                        'val': 1,
+                        'url': 'https://example.com/web_dev',
+                    }
+                },
+                'other': {
+                    'view': {
+                        'notes': 'other notes',
+                        'text': None,
+                        'url': None,
+                        'val': None,
+                    },
+                },
+            },
+        }
+        self.assertEqual(result, expected)
 
-      'activation_risks': None,
-      'active_stage_id': None,
-      'adoption_expectation': None,
-      'adoption_plan': None,
-      'all_platforms': None,
-      'all_platforms_descr': None,
-      'anticipated_spec_changes': None,
-      'availability_expectation': None,
-      'blink_components': ['Blink'],
+    def test_feature_entry_to_json_verbose__bad_view_field(self):
+        """Function handles if any views fields have deprecated values."""
+        # Deprecated views enum value.
+        self.fe_1.safari_views = 4
+        self.fe_1.ff_views = 4
+        self.fe_1.put()
+        result = converters.feature_entry_to_json_verbose(self.fe_1)
+        self.assertEqual(5, result['browsers']['safari']['view']['val'])
+        self.assertEqual(5, result['browsers']['ff']['view']['val'])
 
-      'cc_emails': [],
-      'cc_recipients': [],
-      'creator_email': 'creator@example.com',
-      'debuggability': None,
-      'devtrial_instructions': None,
-      'editor_emails': ['feature_editor@example.com', 'owner_1@example.com'],
-      'enterprise_feature_categories': [],
-      'ergonomics_risks': None,
-      'experiment_timeline': None,
-      'explainer_links': [],
-      'feature_notes': 'notes',
-      'ff_views': 5,
-      'flag_name': None,
-      'finch_name': None,
-      'non_finch_justification': None,
-      'initial_public_proposal_url': None,
-      'interop_compat_risks': None,
-      'measurement': None,
-      'motivation': None,
-      'new_crbug_url': 'https://bugs.chromium.org/p/chromium/issues/entry?components=Blink&cc=feature_owner@example.com',
-      'non_oss_deps': None,
-      'ongoing_constraints': None,
-      'owner_emails': ['feature_owner@example.com'],
-      'owner_emails': ['feature_owner@example.com'],
-      'safari_views': 1,
-      'search_tags': [],
-      'security_risks': None,
-      'spec_mentor_emails': [],
-      'spec_mentors': [],
-      'tag_review': None,
-      'tags': [],
-      'updated_display': None,
-      'updater_email': 'updater@example.com',
-      'web_dev_views': 1,
-      'webview_risks': None,
-      'wpt': None,
-      'wpt_descr': None,
+    def test_feature_entry_to_json_verbose__enterprise_feature(self):
+        """Function handles if any views fields have deprecated values."""
+        # Deprecated views enum value.
+        self.fe_1.feature_type = 4  # FEATURE_TYPE_ENTERPRISE_ID
+        self.fe_1.enterprise_feature_categories = ['1', '2']
+        self.fe_1.put()
+        result = converters.feature_entry_to_json_verbose(self.fe_1)
+        self.assertTrue(result['is_enterprise_feature'])
+        self.assertEqual(['1', '2'], result['enterprise_feature_categories'])
 
-      'tag_review_status': 'Pending',
-      'tag_review_status_int': 1,
-      'security_review_status': 'Issues open',
-      'security_review_status_int': 2,
-      'privacy_review_status': 'Pending',
-      'privacy_review_status_int': 1,
-      'editors': ['feature_editor@example.com', 'owner_1@example.com'],
-      'creator': 'creator@example.com',
-      'comments': 'notes',
-      'browsers': {
-        'chrome': {
-          'bug': 'https://example.com/bug',
-          'blink_components': ['Blink'],
-          'devrel':['devrel@example.com'],
-          'owners':['feature_owner@example.com'],
-          'desktop': 1,
-          'android': 1,
-          'ios': None,
+    def test_feature_entry_to_json_verbose__empty_feature(self):
+        """Function handles an empty feature."""
+        empty_fe = FeatureEntry()
 
-          'origintrial': False,
-          'intervention': False,
-          'prefixed': False,
-          'flag': False,
-          'webview': None,
-          'status': {
-            'milestone_str': '1',
-            'text': 'Enabled by default',
-            'val': 5
-          }
-        },
-        'ff': {
-          'view': {
-          'text': 'No signal',
-          'val': 5,
-          'url': 'https://example.com/ff_views',
-          'notes': 'ff notes',
-          }
-        },
-        'safari': {
-          'view': {
-          'text': 'Shipped/Shipping',
-          'val': 1,
-          'url': 'https://example.com/safari_views',
-          'notes': 'safari notes',
-          }
-        },
-        'webdev': {
-          'view': {
-          'notes': None,
-          'text': 'Strongly positive',
-          'val': 1,
-          'url': 'https://example.com/web_dev',
-          }
-        },
-        'other': {
-          'view': {
-            'notes': 'other notes',
-            'text': None,
-            'url': None,
-            'val': None,
-          },
-        },
-      },
-    }
-    self.assertEqual(result, expected)
+        with self.assertRaises(Exception):
+            converters.feature_entry_to_json_verbose(empty_fe)
 
-  def test_feature_entry_to_json_verbose__bad_view_field(self):
-    """Function handles if any views fields have deprecated values."""
-    # Deprecated views enum value.
-    self.fe_1.safari_views = 4
-    self.fe_1.ff_views = 4
-    self.fe_1.put()
-    result = converters.feature_entry_to_json_verbose(self.fe_1)
-    self.assertEqual(5, result['browsers']['safari']['view']['val'])
-    self.assertEqual(5, result['browsers']['ff']['view']['val'])
+    def test_stage_to_json_dict__no_feature_lookup(self):
+        """stage_to_json_dict converts a stage without fetching its FeatureEntry."""
+        stage = Stage(id=999, feature_id=999999, stage_type=110)
+        with mock.patch.object(
+            FeatureEntry, 'get_by_id', wraps=FeatureEntry.get_by_id
+        ) as mock_fe_get:
+            result = converters.stage_to_json_dict(stage)
 
-  def test_feature_entry_to_json_verbose__enterprise_feature(self):
-    """Function handles if any views fields have deprecated values."""
-    # Deprecated views enum value.
-    self.fe_1.feature_type = 4 # FEATURE_TYPE_ENTERPRISE_ID
-    self.fe_1.enterprise_feature_categories = ['1', '2']
-    self.fe_1.put()
-    result = converters.feature_entry_to_json_verbose(self.fe_1)
-    self.assertTrue(result['is_enterprise_feature'])
-    self.assertEqual(['1', '2'], result['enterprise_feature_categories'])
-
-  def test_feature_entry_to_json_verbose__empty_feature(self):
-    """Function handles an empty feature."""
-    empty_fe = FeatureEntry()
-
-    with self.assertRaises(Exception):
-      converters.feature_entry_to_json_verbose(empty_fe)
+        mock_fe_get.assert_not_called()
+        self.assertEqual(999, result['id'])
+        self.assertEqual(999999, result['feature_id'])
+        self.assertEqual(110, result['stage_type'])
 
 
 class VoteConvertersTest(testing_config.CustomTestCase):
+    """Tests for vote converters."""
 
-  def test_conversion(self):
-    """We can convert a Vote entity to JSON."""
-    vote = Vote(
-        feature_id=1, gate_id=2, gate_type=3, state=4,
-        set_on=datetime(2022, 12, 14, 1, 2, 3),
-        set_by='user@example.com')
-    actual = converters.vote_value_to_json_dict(vote)
-    expected = {
-      'feature_id': 1,
-      'gate_id': 2,
-      'gate_type': 3,
-      'state': 4,
-      'set_on': '2022-12-14 01:02:03',
-      'set_by': 'user@example.com',
-      }
-    self.assertEqual(expected, actual)
+    def test_conversion(self):
+        """We can convert a Vote entity to JSON."""
+        vote = Vote(
+            feature_id=1,
+            gate_id=2,
+            gate_type=3,
+            state=4,
+            set_on=datetime(2022, 12, 14, 1, 2, 3),
+            set_by='user@example.com',
+        )
+        actual = converters.vote_value_to_json_dict(vote)
+        expected = {
+            'feature_id': 1,
+            'gate_id': 2,
+            'gate_type': 3,
+            'state': 4,
+            'set_on': '2022-12-14 01:02:03',
+            'set_by': 'user@example.com',
+        }
+        self.assertEqual(expected, actual)
 
 
 class GateConvertersTest(testing_config.CustomTestCase):
+    """Tests for gate converters."""
 
-  def tearDown(self) -> None:
-    for g in Gate.query():
-      g.key.delete()
+    def tearDown(self) -> None:
+        """Tear down the test."""
+        for g in Gate.query():
+            g.key.delete()
 
-  def test_minimal(self):
-    """If a Gate has only required fields set, we can convert it to JSON."""
-    gate = Gate(feature_id=1, stage_id=2, gate_type=3, state=4)
-    gate.put()
-    actual = converters.gate_value_to_json_dict(gate)
-    appr_def = approval_defs.APPROVAL_FIELDS_BY_ID[gate.gate_type]
-    expected = {
-      'id': gate.key.integer_id(),
-      'feature_id': 1,
-      'stage_id': 2,
-      'gate_type': 3,
-      'team_name': appr_def.team_name,
-      'gate_name': appr_def.name,
-      'escalation_email': None,
-      'state': 4,
-      'requested_on': None,
-      'responded_on': None,
-      'assignee_emails': [],
-      'next_action': None,
-      'additional_review': False,
-      'slo_initial_response': appr_def.slo_initial_response,
-      'slo_initial_response_took': None,
-      'slo_initial_response_remaining': None,
-      }
-    self.assertEqual(expected, actual)
+    def test_minimal(self):
+        """If a Gate has only required fields set, we can convert it to JSON."""
+        gate = Gate(feature_id=1, stage_id=2, gate_type=3, state=4)
+        gate.put()
+        actual = converters.gate_value_to_json_dict(gate)
+        appr_def = approval_defs.APPROVAL_FIELDS_BY_ID[gate.gate_type]
+        expected = {
+            'id': gate.key.integer_id(),
+            'feature_id': 1,
+            'stage_id': 2,
+            'gate_type': 3,
+            'team_name': appr_def.team_name,
+            'gate_name': appr_def.name,
+            'escalation_email': None,
+            'state': 4,
+            'requested_on': None,
+            'responded_on': None,
+            'assignee_emails': [],
+            'next_action': None,
+            'additional_review': False,
+            'slo_initial_response': appr_def.slo_initial_response,
+            'slo_initial_response_took': None,
+            'slo_initial_response_remaining': None,
+            'slo_resolve': approval_defs.DEFAULT_SLO_RESOLVE_LIMIT,
+            'slo_resolve_took': None,
+            'slo_resolve_remaining': None,
+            'needs_work_started_on': None,
+            'self_certify_eligible': False,
+            'self_certify_possible': False,
+            'survey_answers': None,
+        }
+        self.assertEqual(expected, actual)
 
-  @mock.patch('internals.slo.now_utc')
-  def test_maxmimal(self, mock_now):
-    """If a Gate has all fields set, we can convert it to JSON."""
-    gate = Gate(
-        feature_id=1, stage_id=2, gate_type=34, state=4,
-        requested_on=datetime(2022, 12, 14, 1, 2, 3), # Wednesday
-        assignee_emails=['appr1@example.com', 'appr2@example.com'],
-        next_action=datetime(2022, 12, 25),
-        additional_review=True)
-    gate.put()
-    # The review was due on Wednesday 2022-12-21.
-    mock_now.return_value = datetime(2022, 12, 23, 1, 2, 3)  # Thursday after.
+    @mock.patch('internals.slo.now_utc')
+    def test_maxmimal(self, mock_now):
+        """If a Gate has all fields set, we can convert it to JSON."""
+        gate = Gate(
+            feature_id=1,
+            stage_id=2,
+            gate_type=core_enums.GATE_PRIVACY_ORIGIN_TRIAL,
+            state=4,
+            requested_on=datetime(2022, 12, 14, 1, 2, 3),  # Wednesday
+            assignee_emails=['appr1@example.com', 'appr2@example.com'],
+            next_action=datetime(2022, 12, 25),
+            additional_review=True,
+        )
+        gate.survey_answers = SurveyAnswers(
+            is_language_polyfill=True,
+            launch_or_contact='reviewer@example.com',
+            explanation='something',
+        )
+        gate.put()
+        # The review was due on Wednesday 2022-12-21.
+        mock_now.return_value = datetime(
+            2022, 12, 23, 1, 2, 3
+        )  # Thursday after.
 
-    actual = converters.gate_value_to_json_dict(gate)
-    appr_def = approval_defs.APPROVAL_FIELDS_BY_ID[gate.gate_type]
-    expected = {
-      'id': gate.key.integer_id(),
-      'feature_id': 1,
-      'stage_id': 2,
-      'gate_type': 34,
-      'team_name': appr_def.team_name,
-      'gate_name': appr_def.name,
-      'escalation_email': 'chrome-privacy-owp-rotation@google.com',
-      'state': 4,
-      'requested_on': '2022-12-14 01:02:03',
-      'responded_on': None,
-      'assignee_emails': ['appr1@example.com', 'appr2@example.com'],
-      'next_action': '2022-12-25',
-      'additional_review': True,
-      'slo_initial_response': appr_def.slo_initial_response,
-      'slo_initial_response_took': None,  # Review is still in-progress.
-      'slo_initial_response_remaining': -1,  # One weekday overdue.
-      }
-    self.assertEqual(expected, actual)
+        actual = converters.gate_value_to_json_dict(gate)
+        appr_def = approval_defs.APPROVAL_FIELDS_BY_ID[gate.gate_type]
+        expected = {
+            'id': gate.key.integer_id(),
+            'feature_id': 1,
+            'stage_id': 2,
+            'gate_type': core_enums.GATE_PRIVACY_ORIGIN_TRIAL,
+            'team_name': appr_def.team_name,
+            'gate_name': appr_def.name,
+            'escalation_email': 'chrome-privacy-owp-rotation@google.com',
+            'state': 4,
+            'requested_on': '2022-12-14 01:02:03',
+            'responded_on': None,
+            'assignee_emails': ['appr1@example.com', 'appr2@example.com'],
+            'next_action': '2022-12-25',
+            'additional_review': True,
+            'slo_initial_response': appr_def.slo_initial_response,
+            'slo_initial_response_took': None,  # Review is still in-progress.
+            'slo_initial_response_remaining': -1,  # One weekday overdue.
+            'slo_resolve': approval_defs.DEFAULT_SLO_RESOLVE_LIMIT,
+            'slo_resolve_took': None,
+            'slo_resolve_remaining': None,
+            'needs_work_started_on': None,
+            'self_certify_eligible': True,
+            'self_certify_possible': True,
+            'survey_answers': {
+                'is_api_polyfill': False,
+                'is_language_polyfill': True,
+                'is_same_origin_css': False,
+                'covers_existence': False,
+                'covers_common_cases': False,
+                'covers_errors': False,
+                'covers_invalidation': False,
+                'covers_integration': False,
+                'adoption_fields_up_to_date': False,
+                'adoption_style_aligned': False,
+                'adoption_lead_time': False,
+                'adoption_mdn_drafted': False,
+                'adoption_mwg_drafted': False,
+                'launch_or_contact': 'reviewer@example.com',
+                'explanation': 'something',
+            },
+        }
+        self.maxDiff = None
+        self.assertEqual(expected, actual)
 
-  def test_slo_complete_review(self):
-    """If a Gate review was completed, response includes the number of days."""
-    gate = Gate(
-        feature_id=1, stage_id=2, gate_type=3, state=4,
-        requested_on=datetime(2022, 12, 14, 1, 2, 3),
-        responded_on=datetime(2022, 12, 20, 1, 2, 3),
-        assignee_emails=['appr1@example.com', 'appr2@example.com'],
-        next_action=datetime(2022, 12, 25),
-        additional_review=True)
-    gate.put()
-    actual = converters.gate_value_to_json_dict(gate)
+    def test_slo_complete_review(self):
+        """If a Gate review was completed, response includes the number of days."""
+        gate = Gate(
+            feature_id=1,
+            stage_id=2,
+            gate_type=3,
+            state=4,
+            requested_on=datetime(2022, 12, 14, 1, 2, 3),
+            responded_on=datetime(2022, 12, 20, 1, 2, 3),
+            assignee_emails=['appr1@example.com', 'appr2@example.com'],
+            next_action=datetime(2022, 12, 25),
+            additional_review=True,
+        )
+        gate.put()
+        actual = converters.gate_value_to_json_dict(gate)
 
-    self.assertEqual(4, actual['slo_initial_response_took'])
-    self.assertEqual(None, actual['slo_initial_response_remaining'])
+        self.assertEqual(4, actual['slo_initial_response_took'])
+        self.assertEqual(None, actual['slo_initial_response_remaining'])
+
+    def test_adoption_gate_code_change(self):
+        """Adoption gate is eligible for code change features even without MWG."""
+        gate = Gate(
+            feature_id=1,
+            stage_id=2,
+            gate_type=core_enums.GATE_ADOPTION_SHIP,
+            state=4,
+        )
+        gate.survey_answers = SurveyAnswers(
+            adoption_fields_up_to_date=True,
+            adoption_style_aligned=True,
+            adoption_lead_time=True,
+            adoption_mdn_drafted=True,
+            adoption_mwg_drafted=False,
+        )
+        gate.put()
+
+        actual = converters.gate_value_to_json_dict(
+            gate,
+            feature=FeatureEntry(
+                feature_type=core_enums.FEATURE_TYPE_CODE_CHANGE_ID
+            ),
+        )
+        self.assertTrue(actual['self_certify_eligible'])
+
+        actual_other = converters.gate_value_to_json_dict(
+            gate,
+            feature=FeatureEntry(
+                feature_type=core_enums.FEATURE_TYPE_INCUBATE_ID
+            ),
+        )
+        self.assertFalse(actual_other['self_certify_eligible'])
+
+
+class AICurationConvertersTest(testing_config.CustomTestCase):
+    """Tests for AI suggestion, progress step, and milestone curation converters."""
+
+    def tearDown(self):
+        """Tear down test database entities."""
+        for fe in FeatureEntry.query():
+            fe.key.delete()
+        for s in FeatureSummarySuggestion.query():
+            s.key.delete()
+        for c in MilestoneCuration.query():
+            c.key.delete()
+
+    def assert_bidirectional_enum_parity(
+        self,
+        mapping: Mapping[Any, Any],
+        internal_enum: Iterable[Any],
+        schema_name: str,
+        property_name: str,
+    ) -> None:
+        """Asserts 100% bidirectional parity between Datastore enums, converters, and OpenAPI schemas.
+
+        This build-time guard checks both sides of the serialization boundary:
+        1. Input Boundary: Asserts that every member in `internal_enum` is present as a key
+           in `mapping`, preventing unmapped backend database states from causing runtime errors.
+        2. Output Boundary: Asserts that the set of target values produced by `mapping` exactly
+           matches the allowed `enum` strings defined in `openapi/api.yaml` under
+           `components.schemas.<schema_name>.properties.<property_name>`.
+
+        Args:
+            mapping: The converter lookup dictionary (e.g., `converters.BASELINE_STATUS_TO_API`)
+              mapping internal Datastore enum members to target OpenAPI string constants.
+            internal_enum: An iterable or Enum class (e.g., `core_enums.BaselineStatus`)
+              representing the complete domain of valid internal database states.
+            schema_name: The name of the target schema component in `openapi/api.yaml`
+              (e.g., `'SummarySuggestion'`).
+            property_name: The property name within `schema_name` whose allowed enum strings
+              should be matched (e.g., `'baseline_status'`).
+
+        Raises:
+            AssertionError: If any internal enum member is missing from `mapping` keys, or if
+              the mapping values drift from the OpenAPI schema enum definition.
+        """
+        self.assertEqual(
+            set(internal_enum),
+            set(mapping.keys()),
+            f'Input boundary drift detected for {schema_name}.{property_name}: '
+            f'Internal enum members {set(internal_enum)} != mapping keys {set(mapping.keys())}',
+        )
+
+        with open('openapi/api.yaml', encoding='utf-8') as f:
+            api_spec = yaml.safe_load(f)
+        openapi_allowed = set(
+            api_spec['components']['schemas'][schema_name]['properties'][
+                property_name
+            ]['enum']
+        )
+        mapped_values = set(mapping.values())
+        self.assertEqual(
+            openapi_allowed,
+            mapped_values,
+            f'Output boundary drift detected for {schema_name}.{property_name}: '
+            f'OpenAPI allowed {openapi_allowed} != mapping values {mapped_values}',
+        )
+
+    def test_feature_summary_suggestion_to_dict__serializes_cleanly(self):
+        """Verify string enums and properties serialize cleanly without integer helpers."""
+        fe = FeatureEntry(
+            id=101,
+            name='Feature 101',
+            summary='Summary 101',
+            category=1,
+            feature_type=1,
+        )
+        fe.put()
+        suggestion = FeatureSummarySuggestion(
+            id=101,
+            suggested_summary='AI suggested summary',
+            original_summary='Summary 101',
+            status=core_enums.SummarySuggestionStatus.PROPOSED,
+            baseline_status=core_enums.BaselineStatus.WIDELY,
+            suggested_doc_links=['https://developer.mozilla.org/doc'],
+            version_token=3,
+        )
+        suggestion.put()
+
+        actual = converters.feature_summary_suggestion_to_dict(suggestion)
+        self.assertEqual(101, actual['feature_id'])
+        self.assertEqual('AI suggested summary', actual['suggested_summary'])
+        self.assertEqual('Summary 101', actual['original_summary'])
+        self.assertEqual('PENDING', actual['status'])
+        self.assertEqual('widely', actual['baseline_status'])
+        self.assertIsNone(actual['reasoning'])
+        self.assertEqual(
+            ['https://developer.mozilla.org/doc'], actual['suggested_doc_links']
+        )
+        self.assertEqual(3, actual['version_token'])
+        self.assertIsInstance(actual['created'], str)
+
+    def test_summary_progress_step_to_dict__serializes_cleanly(self):
+        """Verify step timeline telemetry serializes string IDs and timestamps cleanly."""
+        step = FeatureSummaryProgressStep(
+            step_id=core_enums.ProgressStepId.SEARCH_MDN,
+            status=core_enums.ProgressStepStatus.IN_PROGRESS,
+            message='Searching MDN',
+            start_timestamp=datetime(2026, 7, 16, 12, 0),
+        )
+
+        actual = converters.summary_progress_step_to_dict(step)
+        self.assertEqual('SEARCH_MDN', actual['step'])
+        self.assertEqual('IN_PROGRESS', actual['status'])
+        self.assertEqual('Searching MDN', actual['message'])
+        self.assertEqual('2026-07-16 12:00:00', actual['start_timestamp'])
+
+    def test_milestone_curation_to_dict__serializes_cleanly(self):
+        """Verify milestone curation serializes repeated curator emails and string status."""
+        curation = MilestoneCuration(
+            id='135',
+            milestone=135,
+            status=core_enums.MilestoneCurationStatus.IN_REVIEW,
+            curator_emails=['editor1@google.com'],
+        )
+        curation.put()
+
+        actual = converters.milestone_curation_to_dict(curation)
+        self.assertEqual(135, actual['milestone'])
+        self.assertEqual('IN_REVIEW', actual['status'])
+        self.assertEqual(
+            ['editor1@google.com'],
+            actual['curator_emails'],
+        )
+
+    def test_feature_entry_to_release_note_feature_dict__serializes_cleanly(
+        self,
+    ):
+        """Verify feature entries serialize categorized items for the release hub."""
+        fe = FeatureEntry(
+            id=202,
+            name='CSS Anchor Positioning',
+            summary='Positions elements relative to anchors.',
+            category=core_enums.CSS,
+            feature_type=1,
+            bug_url='https://issues.chromium.org/issues/40731275',
+            spec_link='https://www.w3.org/TR/css-anchor-position-1/',
+            doc_links=[
+                'https://developer.chrome.com/docs/css-ui/anchor-positioning'
+            ],
+            explainer_links=[
+                'https://github.com/w3c/csswg-drafts/issues/css-anchor'
+            ],
+            sample_links=['https://glitch.com/~anchor-positioning-demo'],
+        )
+        fe.put()
+
+        actual = converters.feature_entry_to_release_note_feature_dict(
+            fe,
+            has_applied_suggestion=True,
+            baseline_status=core_enums.BaselineStatus.NEWLY,
+            milestone_classification=(
+                core_enums.ReleaseNoteMilestoneClassification.ORIGIN_TRIAL
+            ),
+            origin_trial_url='/origintrials#/view_trial/ot-anchor-1',
+        )
+        self.assertEqual(202, actual['id'])
+        self.assertEqual('CSS Anchor Positioning', actual['name'])
+        self.assertEqual('CSS', actual['category_name'])
+        self.assertEqual(
+            converters.OpenAPIBaselineStatus.NEWLY, actual['baseline_status']
+        )
+        self.assertEqual(
+            converters.OpenAPISummarySource.AI_APPLIED, actual['summary_source']
+        )
+        self.assertEqual(
+            core_enums.ReleaseNoteMilestoneClassification.ORIGIN_TRIAL,
+            actual['milestone_classification'],
+        )
+
+        # Verify typed links array
+        links = actual['links']
+        self.assertEqual(7, len(links))
+        self.assertEqual(
+            '/origintrials#/view_trial/ot-anchor-1', links[0]['url']
+        )
+        self.assertEqual(
+            core_enums.ReleaseNoteLinkType.ORIGIN_TRIAL, links[0]['type']
+        )
+        self.assertEqual('Origin Trial', links[0]['title'])
+
+        self.assertEqual(
+            'https://issues.chromium.org/issues/40731275', links[1]['url']
+        )
+        self.assertEqual(core_enums.ReleaseNoteLinkType.BUG, links[1]['type'])
+        self.assertEqual('Tracking bug #40731275', links[1]['title'])
+
+        self.assertEqual('/feature/202', links[2]['url'])
+        self.assertEqual(
+            core_enums.ReleaseNoteLinkType.CHROMESTATUS, links[2]['type']
+        )
+        self.assertEqual('ChromeStatus.com entry', links[2]['title'])
+
+        self.assertEqual(
+            'https://www.w3.org/TR/css-anchor-position-1/', links[3]['url']
+        )
+        self.assertEqual(core_enums.ReleaseNoteLinkType.SPEC, links[3]['type'])
+        self.assertEqual('Spec', links[3]['title'])
+
+        self.assertEqual(
+            'https://developer.chrome.com/docs/css-ui/anchor-positioning',
+            links[4]['url'],
+        )
+        self.assertEqual(core_enums.ReleaseNoteLinkType.DOC, links[4]['type'])
+
+        self.assertEqual(
+            'https://github.com/w3c/csswg-drafts/issues/css-anchor',
+            links[5]['url'],
+        )
+        self.assertEqual(
+            core_enums.ReleaseNoteLinkType.EXPLAINER, links[5]['type']
+        )
+        self.assertEqual('Explainer', links[5]['title'])
+
+        self.assertEqual(
+            'https://glitch.com/~anchor-positioning-demo', links[6]['url']
+        )
+        self.assertEqual(core_enums.ReleaseNoteLinkType.DEMO, links[6]['type'])
+        self.assertEqual('Demo', links[6]['title'])
+
+    def test_feature_entry_to_release_note_feature_dict__unmapped_category_fallback(
+        self,
+    ):
+        """Verify fallback to official MISC category display name when category ID is unmapped."""
+        fe = FeatureEntry(
+            id=203,
+            name='Unmapped Feature',
+            summary='An unmapped category feature.',
+            category=999,
+            feature_type=1,
+        )
+        fe.put()
+
+        actual = converters.feature_entry_to_release_note_feature_dict(fe)
+        self.assertEqual('Miscellaneous', actual['category_name'])
+
+    def test_unmapped_enum_fallback(self):
+        """Verify that encountering an unmapped enum value falls back to safe default without crashing."""
+        fe = FeatureEntry(
+            id=101,
+            name='Feature 101',
+            summary='Summary 101',
+            category=1,
+            feature_type=1,
+        )
+        fe.put()
+        suggestion = FeatureSummarySuggestion(
+            id=101,
+            suggested_summary='AI suggested summary',
+            status='UNMAPPED_BOGUS_STATUS',
+            baseline_status='UNMAPPED_BASELINE',
+        )
+        suggestion.put()
+
+        actual = converters.feature_summary_suggestion_to_dict(suggestion)
+        self.assertEqual(
+            converters.OpenAPISuggestionStatus.PENDING, actual['status']
+        )
+        self.assertEqual(
+            converters.OpenAPIBaselineStatus.NONE, actual['baseline_status']
+        )
+
+    def test_exhaustive_enum_parity_with_openapi_models(self):
+        """Build-time guard asserting 100% parity between core_enums members, converter maps, and generated OpenAPI allowed_values."""
+        # 1. SummarySuggestionStatus
+        self.assert_bidirectional_enum_parity(
+            converters.SUMMARY_SUGGESTION_STATUS_TO_API,
+            core_enums.SummarySuggestionStatus,
+            'SummarySuggestion',
+            'status',
+        )
+
+        # 2. BaselineStatus
+        self.assert_bidirectional_enum_parity(
+            converters.BASELINE_STATUS_TO_API,
+            core_enums.BaselineStatus,
+            'SummarySuggestion',
+            'baseline_status',
+        )
+
+        # 3. ProgressStepId
+        self.assert_bidirectional_enum_parity(
+            converters.PROGRESS_STEP_ID_TO_API,
+            core_enums.ProgressStepId,
+            'SummaryProgressStep',
+            'step',
+        )
+
+        # 4. ProgressStepStatus
+        self.assert_bidirectional_enum_parity(
+            converters.PROGRESS_STEP_STATUS_TO_API,
+            core_enums.ProgressStepStatus,
+            'SummaryProgressStep',
+            'status',
+        )
+
+        # 5. MilestoneCurationStatus
+        self.assert_bidirectional_enum_parity(
+            converters.MILESTONE_CURATION_STATUS_TO_API,
+            core_enums.MilestoneCurationStatus,
+            'MilestoneCurationResponse',
+            'status',
+        )
+
+    def test_feature_entry_to_release_note_feature_dict__baseline_fallback_when_suggestion_baseline_is_none(
+        self,
+    ):
+        """Verify fallback to baseline_status arg when applied suggestion has baseline_status=None."""
+        fe = FeatureEntry(
+            id=101,
+            name='Feature 101',
+            summary='Summary 101',
+            category=1,
+            feature_type=1,
+        )
+        fe.put()
+        suggestion = FeatureSummarySuggestion(
+            id=101,
+            suggested_summary='AI suggested summary',
+            status=core_enums.SummarySuggestionStatus.APPLIED,
+            baseline_status=None,
+        )
+        suggestion.put()
+
+        actual = converters.feature_entry_to_release_note_feature_dict(
+            fe,
+            applied_suggestion=suggestion,
+            baseline_status=core_enums.BaselineStatus.WIDELY,
+        )
+        self.assertEqual(
+            converters.OpenAPIBaselineStatus.WIDELY, actual['baseline_status']
+        )
+        self.assertEqual(
+            converters.OpenAPISummarySource.AI_APPLIED, actual['summary_source']
+        )

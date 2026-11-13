@@ -1,22 +1,55 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import {css} from 'lit';
 import {VARS} from './_vars-css.js';
 import {RESET} from './_reset-css.js';
+import {FLEX_BOX} from './_flexbox-css.js';
 
 export const SHARED_STYLES = [
   VARS,
   RESET,
+  FLEX_BOX,
   css`
 
   * {
     box-sizing: border-box;
-    list-style: none;
-     /* font: inherit; */
+    /* font: inherit; */
     text-decoration: inherit;
     -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
   }
 
   .conditional-comma:last-child {
     display: none;
+  }
+
+  .data-table {
+    width: 100%;
+    border: var(--default-border);
+    border-radius: var(--border-radius);
+  }
+  .data-table th {
+    text-align: left;
+    background: var(--table-header-background);
+    padding: var(--content-padding-half) var(--content-padding);
+  }
+  .data-table td {
+    vertical-align: top;
+    border-top: var(--default-border);
+    padding: var(--content-padding-half) var(--content-padding);
   }
 
   h1,
@@ -55,6 +88,23 @@ export const SHARED_STYLES = [
     cursor: pointer;
   }
 
+
+  .roadmap-sidebar nav {
+    display: flex;
+    flex-direction: column;
+    gap: var(--content-padding-quarter);
+  }
+
+  .roadmap-sidebar nav a {
+    display: block;
+    line-height: 1.4;
+  }
+
+  .roadmap-sidebar nav a[aria-current="page"],
+  .roadmap-sidebar nav a.active {
+    margin-bottom: 0; /* spacing handled by gap */
+  }
+
   input:not([type="submit"]),
   textarea {
     border: 1px solid var(--bar-border-color);
@@ -89,6 +139,12 @@ export const SHARED_STYLES = [
     font-weight: bold;
   }
 
+  button.primary:disabled,
+  input[type="submit"]:disabled,
+  .button.primary:disabled {
+    background: var(--gray-4);
+  }
+
   .button.secondary {
     margin: var(--content-padding);
     border: var(--default-border);
@@ -115,6 +171,10 @@ export const SHARED_STYLES = [
     padding: 10px 7px;
   }
 
+  code {
+    font-family: monospace;
+  }
+
   .description {
     line-height: 1.4;
   }
@@ -124,66 +184,42 @@ export const SHARED_STYLES = [
     margin-right: 0.2em;
   }
 
+  details {
+    padding: var(--content-padding-quarter);
+  }
+
+  details summary {
+    white-space: nowrap;
+    box-sizing: border-box;
+    contain: content;
+    overflow: hidden;
+    cursor: pointer;
+    transition: margin 250ms ease-out;
+  }
+
+  details summary:hover {
+    color: var(--link-hover-color);
+  }
+
+  details[open] #preview {
+    display: none;
+  }
+
+  details[open] summary {
+    margin-bottom: var(--content-padding-quarter);
+  }
+
+  details > div {
+    padding: var(--content-padding-quarter);
+    padding-left: var(--content-padding);
+  }
+
   .no-web-share {
     display: none;
   }
 
-  iron-icon {
-    height: var(--icon-size);
-    width: var(--icon-size);
-  }
-
   .preformatted {
     white-space: pre-wrap;
-  }
-
-  .feature-link {
-    display: inline;
-    white-space: normal;
-    line-break: anywhere;
-    color: var(--default-font-color);
-  }
-
-  .feature-link:hover {
-    text-decoration: none;
-  }
-
-  .feature-link sl-badge::part(base) {
-    height: 14px;
-    padding: 4px;
-    border-width: 0;
-    text-transform: capitalize;
-    font-weight: 400;
-  }
-
-  .feature-link sl-tag::part(base) {
-    vertical-align: middle;
-    height: 18px;
-    background-color: rgb(232,234,237);
-    color: var(--default-font-color);
-    border: none;
-    border-radius: 500px;
-    display: inline-flex;
-    align-items: center;
-    column-gap: 0.3em;
-    padding: 1px 5px;
-    margin: 1px 0;
-  }
-
-  .feature-link sl-tag::part(base):hover {
-    background-color: rgb(209,211,213);
-  }
-
-  .feature-link .icon {
-    display: block;
-    width: 12px;
-    height: 12px;
-  }
-
-  .feature-link-tooltip {
-    display: flex;
-    flex-direction: column;
-    row-gap: 0.5em;
   }
 
   .warning {
@@ -193,9 +229,20 @@ export const SHARED_STYLES = [
     color: var(--warning-color);
   }
 
+  #breadcrumbs {
+    display: flex;
+    align-items: center;
+  }
+
   #breadcrumbs a {
     text-decoration: none;
     color: inherit;
+    display: flex;
+    align-items: center;
+  }
+
+  #breadcrumbs a sl-icon {
+    padding-right: var(--content-padding-half);
   }
 
   sl-dialog::part(title) {
@@ -225,7 +272,7 @@ export const SHARED_STYLES = [
     background: var(--accordion-background);
     font-weight: 300;
     font-size: 20px;
-    padding: var(--content-padding-quarter) var(--content-padding-half)
+    padding: var(--content-padding-quarter) var(--content-padding-half);
   }
 
   sl-details::part(content) {
@@ -238,7 +285,11 @@ export const SHARED_STYLES = [
   }
 
   sl-relative-time {
-    margin: 0 -3px;  // Mitigate spacing from unknown cause.
+    margin: 0 -3px; /* Mitigate spacing from unknown cause. */
+  }
+
+  sl-relative-time.no-squeeze {
+    margin: 0 0;
   }
 
   @media only screen and (max-width: 700px) {

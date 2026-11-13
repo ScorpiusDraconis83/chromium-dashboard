@@ -12,9 +12,8 @@ updates:
     commit-message:
       # Prefix all commit messages with "npm"
       prefix: "npm"
-    reviewers:
-      - "kyleju"
-      - "jrobbins"
+    cooldown:
+      default-days: 21
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -22,6 +21,26 @@ updates:
     commit-message:
       # Prefix all commit messages with "docker"
       prefix: "docker"
-    reviewers:
-      - "jrobbins"
-      - "jcscottiii"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-org:
+        patterns: ["*"]
+    commit-message:
+      # Prefix all commit messages with "gh-actions"
+      prefix: "gh-actions"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # Prefix all commit messages with "pip"
+      prefix: "pip"
+    cooldown:
+      default-days: 14

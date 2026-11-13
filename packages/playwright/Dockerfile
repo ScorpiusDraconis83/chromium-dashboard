@@ -19,8 +19,20 @@ RUN npm config set script-shell bash --global
 
 USER pwuser
 WORKDIR /work
-# Cache the infrequent but time consuming changes early
-COPY --chown=pwuser:pwuser package.json /work/
-RUN npm install -D
-# Copy the rest
-COPY --chown=pwuser:pwuser . /work
+
+# Set environment variable so we can tell we're performing Playwright tests.
+ENV PLAYWRIGHT_MODE=true
+
+# Install consistent versions of Playwright and Axe. The duplicate ARG lines are needed
+# to copy values into this build stage.
+ARG PLAYWRIGHT_VERSION
+ARG AXE_CORE_PLAYWRIGHT_VERSION
+RUN npm install @playwright/test@${PLAYWRIGHT_VERSION} @axe-core/playwright@${AXE_CORE_PLAYWRIGHT_VERSION}
+
+# Copy the root directory. Subdirectories are mounted in docker-compose.yml.
+COPY --chown=pwuser:pwuser wait-for-app.sh playwright.config.ts /work/
+
+# The playwright.config.ts file is copied from the repository root, where it is
+# needed for VS Code integration. Inside the container, the test directory is
+# the root, so we update the path.
+RUN sed -i "s|testDir: 'packages/playwright/tests'|testDir: '.'|" /work/playwright.config.ts

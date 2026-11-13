@@ -1,0 +1,370 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import {LitElement, html, css, nothing} from 'lit';
+import {showToastMessage, isMobile, redirectToCurrentPage} from './utils.js';
+import {SHARED_STYLES} from '../css/shared-css.js';
+import {customElement, property, state} from 'lit/decorators.js';
+import {User} from '../js-src/cs-client.js';
+
+@customElement('chromedash-header')
+export class ChromedashHeader extends LitElement {
+  static get styles() {
+    return [
+      ...SHARED_STYLES,
+      css`
+        :host {
+          --nav-link-color: var(--sl-color-neutral-700);
+          --nav-link-font-size: 16px;
+          --nav-link-hover-background: var(--sl-color-neutral-100);
+          --nav-link-border: 2px solid transparent;
+          --nav-link-active-color: var(--cl-color-primary-900);
+          --nav-link-active-border: 2px solid var(--nav-link-active-color);
+        }
+
+        header {
+          display: flex;
+          align-items: center;
+          user-select: none;
+          background: var(--card-background);
+          border-bottom: var(--card-border);
+          box-shadow: var(--card-box-shadow);
+        }
+        header a {
+          text-decoration: none !important;
+        }
+        header nav {
+          display: flex;
+          flex: 1;
+          align-items: center;
+          margin: 0 var(--content-padding);
+          -webkit-font-smoothing: initial;
+        }
+
+        sl-button[slot='trigger']::part(base) {
+          color: var(--unimportant-text-color);
+        }
+        header aside a {
+          color: var(--logo-color);
+        }
+        header aside h1 {
+          line-height: 1;
+        }
+        header aside img {
+          height: 24px;
+          width: 24px;
+        }
+
+        .flex-container {
+          display: flex;
+          justify-content: flex-end;
+          flex-wrap: wrap;
+          align-items: center;
+          width: 100%;
+        }
+
+        .nav-dropdown-trigger {
+          display: flex;
+          align-items: flex-end;
+        }
+        .nav-dropdown-trigger sl-icon {
+          padding-left: var(--content-padding-half);
+        }
+
+        .menu {
+          margin-left: 15px;
+          margin-right: 7px;
+          align-items: center;
+        }
+        .menu:hover {
+          color: black;
+          background: var(--nav-link-hover-background);
+        }
+        .menu [active] {
+          color: var(--nav-link-active-color);
+          border-bottom: var(--nav-link-active-border);
+        }
+
+        @media only screen and (max-width: 700px) {
+          header {
+            --logoSize: 24px;
+
+            margin: 0;
+            display: flex;
+          }
+          header aside {
+            display: flex;
+            padding: var(--content-padding-half);
+            border-radius: 0;
+            background: inherit;
+          }
+        }
+      `,
+    ];
+  }
+
+  @property({type: String})
+  appTitle = '';
+  @property({type: String})
+  googleSignInClientId = '';
+  @property({type: String})
+  devMode = '';
+  @property({type: String})
+  currentPage = '';
+  @property({type: Object})
+  user = {} as User;
+  @state()
+  loading = false;
+
+  connectedCallback() {
+    super.connectedCallback();
+
+    if (isMobile()) {
+      // Login UI will be handled by chromedash-drawer instead.
+      return;
+    }
+
+    // user is passed in from chromedash-app
+    if (this.user && this.user.email) return;
+
+    // user is passed in from chromedash-app, but the user is not logged in
+    if (!this.user) {
+      if (!window['isPlaywright']) {
+        // Insert the google signin button first.
+        // Only insert if not running playwright.
+        this.initializeGoogleSignIn();
+      }
+      if (this.devMode == 'True') {
+        // Insert the testing signin second, so it appears to the left
+        // of the google signin button, with a large margin on the right.
+        this.initializeTestingSignIn();
+      }
+      return;
+    }
+
+    // user is not passed in from anywhere, i.e. this.user is still {}
+    // this is for MPA pages where this component is initialized in _base.html
+    this.loading = true;
+    window.csClient
+      .getPermissions()
+      .then(user => {
+        this.user = user;
+        if (!this.user) {
+          if (!window['isPlaywright']) {
+            this.initializeGoogleSignIn();
+          }
+          if (this.devMode == 'True') {
+            this.initializeTestingSignIn();
+          }
+        }
+      })
+      .catch(() => {
+        showToastMessage(
+          'Some errors occurred. Please refresh the page or try again later.'
+        );
+      })
+      .finally(() => {
+        this.loading = false;
+      });
+  }
+
+  initializeGoogleSignIn() {
+    google.accounts.id.initialize({
+      client_id: this.googleSignInClientId,
+      callback: this.handleCredentialResponse,
+      use_fedcm_for_prompt: true,
+    });
+    google.accounts.id.prompt();
+
+    // Google Identity Services Library cannot find elements in a shadow DOM,
+    // so we create signInButton element at the document level and insert it
+    // in the light DOM of the header, which will be rendered in the <slot> below
+    const signInButton = document.createElement('div');
+    google.accounts.id.renderButton(signInButton, {type: 'standard'});
+    const appComponent = document.querySelector('chromedash-app');
+    if (appComponent) {
+      appComponent.insertAdjacentElement('afterbegin', signInButton); // for SPA
+    } else {
+      this.insertAdjacentElement('afterbegin', signInButton); // for MPA
+    }
+  }
+
+  initializeTestingSignIn() {
+    // Create DEV_MODE login button for testing
+    const signInTestingButton = document.createElement('button');
+    signInTestingButton.innerText = 'Sign in as example@chromium.org';
+    signInTestingButton.setAttribute('type', 'button');
+    signInTestingButton.setAttribute('data-testid', 'dev-mode-sign-in-button');
+    signInTestingButton.setAttribute(
+      'style',
+      'margin-right: 300px; z-index:1000; background: lightblue; border: 1px solid blue;'
+    );
+
+    signInTestingButton.addEventListener('click', () => {
+      // POST to '/dev/mock_login' to login as example@chromium.
+      fetch('/dev/mock_login', {method: 'POST'})
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`Sign in failed! Response: ${response}`);
+          }
+        })
+        .then(() => {
+          redirectToCurrentPage();
+        })
+        .catch(error => {
+          console.error('Sign in failed.', error);
+        });
+    });
+
+    const signInButtonContainer = document.querySelector('chromedash-app');
+    if (signInButtonContainer) {
+      signInButtonContainer.insertAdjacentElement(
+        'afterbegin',
+        signInTestingButton
+      ); // for SPA
+    } else {
+      this.insertAdjacentElement('afterbegin', signInTestingButton); // for MPA
+    }
+  }
+
+  handleCredentialResponse(credentialResponse) {
+    window.csClient
+      .signIn(credentialResponse)
+      .then(() => {
+        setTimeout(() => {
+          redirectToCurrentPage();
+        }, 1000);
+      })
+      .catch(() => {
+        console.error('Sign in failed, so signing out to allow retry');
+        this.signOut();
+      });
+  }
+
+  gotoSettings() {
+    window.location.href = '/settings';
+  }
+
+  signOut() {
+    window.csClient.signOut().then(() => {
+      window.location.reload();
+    });
+  }
+
+  isCurrentPage(href) {
+    return this.currentPage.startsWith(href);
+  }
+
+  _fireEvent(eventName, detail) {
+    const event = new CustomEvent(eventName, {
+      bubbles: true,
+      composed: true,
+      detail,
+    });
+    this.dispatchEvent(event);
+  }
+
+  handleDrawer() {
+    this._fireEvent('drawer-clicked', {});
+  }
+
+  renderAccountMenu() {
+    const alreadyOnNew =
+      this.isCurrentPage('/guide/new') ||
+      this.isCurrentPage('/guide/enterprise/new');
+    return html`
+      ${
+        this.user
+          ? html`
+              ${
+                this.user.can_create_feature && !alreadyOnNew
+                  ? html`
+                      <sl-button
+                        data-testid="create-feature-button"
+                        href="/guide/new"
+                        variant="primary"
+                        size="small"
+                      >
+                        Create feature
+                      </sl-button>
+                    `
+                  : nothing
+              }
+              <sl-dropdown>
+                <sl-button
+                  slot="trigger"
+                  variant="text"
+                  size="medium"
+                  data-testid="account-indicator"
+                  caret
+                >
+                  ${this.user.email}
+                </sl-button>
+                <sl-menu>
+                  <sl-menu-item @click=${this.gotoSettings}>
+                    Settings
+                  </sl-menu-item>
+                  <sl-menu-item
+                    id="sign-out-link"
+                    data-testid="sign-out-link"
+                    @click=${this.signOut}
+                    >Sign out</sl-menu-item
+                  >
+                </sl-menu>
+              </sl-dropdown>
+            `
+          : html` <slot></slot> `
+      }
+    `;
+  }
+
+  render() {
+    let accountMenu = html``;
+    if (!isMobile() && !this.loading) {
+      accountMenu = html` <div class="flex-container">
+        ${this.renderAccountMenu()}
+      </div>`;
+    }
+
+    return html`
+      <header data-testid="header">
+        <sl-icon-button
+          data-testid="menu"
+          variant="text"
+          library="material"
+          class="menu"
+          style="font-size: 2.4rem;"
+          name="menu_20px"
+          @click="${this.handleDrawer}"
+        >
+        </sl-icon-button>
+        <aside>
+          <a href="/roadmap" target="_top">
+            <h1>
+              <img
+                src="/static/img/chrome_logo.svg"
+                alt=""
+                role="presentation"
+              />
+              ${this.appTitle}
+            </h1>
+          </a>
+        </aside>
+        <nav>${accountMenu}</nav>
+      </header>
+    `;
+  }
+}

@@ -1,0 +1,290 @@
+# Copyright 2025 Google Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License")
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for the wpt_coverage_api module, verifying the creation, permissions, and deletion of WPT coverage reports."""
+
+from datetime import datetime
+from unittest import mock
+
+import flask
+import werkzeug.exceptions
+
+import testing_config
+from api import wpt_coverage_api
+from internals import core_enums
+from internals.core_models import FeatureEntry
+
+test_app = flask.Flask(__name__)
+
+
+class WPTCoverageAPITest(testing_config.CustomTestCase):
+    """Tests for the WPT Coverage API handler."""
+
+    def setUp(self):
+        """Set up test data for the API handler."""
+        self.handler = wpt_coverage_api.WPTCoverageAPI()
+
+        # Create a feature to test against.
+        self.feature_1 = FeatureEntry(
+            id=123456,
+            name='Test Feature 1',
+            summary='Summary for testing',
+            category=1,
+            owner_emails=['owner@example.com'],
+        )
+        self.feature_1.put()
+
+    @mock.patch('framework.permissions.is_google_or_chromium_account')
+    @mock.patch('framework.cloud_tasks_helpers.enqueue_task')
+    @mock.patch('framework.permissions.can_edit_feature')
+    def test_do_post__success(
+        self, mock_can_edit, mock_enqueue, mock_is_google
+    ):
+        """Ensure valid requests update the feature and enqueue a task."""
+        mock_can_edit.return_value = True
+        mock_is_google.return_value = True
+        # Track the time before the operation to verify the timestamp update.
+        before_call = datetime.now()
+
+        feature_id = 123456
+        with test_app.test_request_context(
+            f'/api/v0/features/{feature_id}/wpt-coverage-analysis',
+            method='POST',
+        ):
+            response = self.handler.do_post(feature_id=feature_id)
+
+        self.assertEqual(response, {'message': 'Task enqueued'})
+
+        mock_can_edit.assert_called_once()
+        mock_is_google.assert_called_once()
+
+        # Verify Cloud Task was enqueued with correct parameters.
+        mock_enqueue.assert_called_once_with(
+            '/tasks/generate-wpt-coverage-analysis',
+            {'feature_id': 123456, 'include_explainer': False},
+        )
+
+        updated_feature = FeatureEntry.get_by_id(123456)
+        self.assertEqual(
+            updated_feature.ai_test_eval_run_status,
+            core_enums.AITestEvaluationStatus.IN_PROGRESS.value,
+        )
+        self.assertIsNotNone(updated_feature.ai_test_eval_status_timestamp)
+        self.assertGreaterEqual(
+            updated_feature.ai_test_eval_status_timestamp, before_call
+        )
+
+    @mock.patch('framework.cloud_tasks_helpers.enqueue_task')
+    @mock.patch('framework.permissions.can_edit_feature')
+    def test_do_post__forbidden(self, mock_can_edit, mock_enqueue):
+        """Ensure requests without edit permissions abort with 403."""
+        mock_can_edit.return_value = False
+
+        feature_id = 123456
+        with test_app.test_request_context(
+            f'/api/v0/features/{feature_id}/wpt-coverage-analysis',
+            method='POST',
+        ):
+            with self.assertRaises(werkzeug.exceptions.Forbidden):
+                self.handler.do_post(feature_id=feature_id)
+
+        # Verify no task was enqueued.
+        mock_enqueue.assert_not_called()
+
+        # Verify FeatureEntry was NOT updated.
+        unchanged_feature = FeatureEntry.get_by_id(123456)
+        self.assertIsNone(unchanged_feature.ai_test_eval_run_status)
+        self.assertIsNone(unchanged_feature.ai_test_eval_status_timestamp)
+
+    @mock.patch('framework.permissions.is_google_or_chromium_account')
+    @mock.patch('framework.cloud_tasks_helpers.enqueue_task')
+    @mock.patch('framework.permissions.can_edit_feature')
+    def test_do_post__not_google_or_chromium_account(
+        self, mock_can_edit, mock_enqueue, mock_is_google
+    ):  # noqa: E501
+        """Ensure requests from non-Google/Chromium accounts abort with 403."""
+        mock_can_edit.return_value = True
+        mock_is_google.return_value = False
+
+        feature_id = 123456
+        with test_app.test_request_context(
+            f'/api/v0/features/{feature_id}/wpt-coverage-analysis',
+            method='POST',
+        ):
+            with self.assertRaises(werkzeug.exceptions.Forbidden) as cm:
+                self.handler.do_post(feature_id=feature_id)
+
+            self.assertEqual(
+                cm.exception.description,
+                'This feature is currently only available to Google or Chromium accounts.',  # noqa: E501
+            )
+
+        # Verify no task was enqueued.
+        mock_enqueue.assert_not_called()
+
+    @mock.patch('framework.cloud_tasks_helpers.enqueue_task')
+    def test_do_post__not_found(self, mock_enqueue):
+        """Ensure requests for non-existent features abort with 404."""
+        feature_id = 999999  # ID that does not exist.
+        with test_app.test_request_context(
+            f'/api/v0/features/{feature_id}/wpt-coverage-analysis',
+            method='POST',
+        ):
+            with self.assertRaises(werkzeug.exceptions.NotFound):
+                self.handler.do_post(feature_id=feature_id)
+
+        mock_enqueue.assert_not_called()
+
+    @mock.patch('framework.permissions.is_google_or_chromium_account')
+    @mock.patch('framework.cloud_tasks_helpers.enqueue_task')
+    @mock.patch('framework.permissions.can_edit_feature')
+    def test_do_post__already_in_progress(
+        self, mock_can_edit, mock_enqueue, mock_is_google
+    ):
+        """Ensure requests abort with 409 if an analysis is already running."""
+        mock_can_edit.return_value = True
+        mock_is_google.return_value = True
+
+        self.feature_1.ai_test_eval_run_status = (
+            core_enums.AITestEvaluationStatus.IN_PROGRESS.value
+        )
+        self.feature_1.ai_test_eval_status_timestamp = datetime.now()
+        self.feature_1.put()
+
+        feature_id = self.feature_1.key.integer_id()
+        with test_app.test_request_context(
+            f'/api/v0/features/{feature_id}/wpt-coverage-analysis',
+            method='POST',
+        ):
+            with self.assertRaises(werkzeug.exceptions.HTTPException) as cm:
+                self.handler.do_post(feature_id=feature_id)
+
+            # Verify the status code inside the exception.
+            self.assertEqual(cm.exception.response.status_code, 409)
+            self.assertIn('Retry-After', cm.exception.response.headers)
+            self.assertIn('Retry-After', cm.exception.response.headers)
+
+            # Verify the Retry-After header is present and is an integer.
+            self.assertIn('Retry-After', cm.exception.response.headers)
+            retry_after = cm.exception.response.headers['Retry-After']
+            self.assertTrue(str(retry_after).isdigit())
+
+        # Verify we did not enqueue a duplicate task.
+        mock_enqueue.assert_not_called()
+
+    @mock.patch('framework.permissions.is_google_or_chromium_account')
+    @mock.patch('framework.cloud_tasks_helpers.enqueue_task')
+    @mock.patch('framework.permissions.can_edit_feature')
+    def test_do_post__confidential_feature(
+        self, mock_can_edit, mock_enqueue, mock_is_google
+    ):
+        """Ensure requests for confidential features abort with 400."""
+        mock_can_edit.return_value = True
+        mock_is_google.return_value = True
+
+        # Set the feature to confidential.
+        self.feature_1.confidential = True
+        self.feature_1.put()
+
+        feature_id = self.feature_1.key.integer_id()
+        with test_app.test_request_context(
+            f'/api/v0/features/{feature_id}/wpt-coverage-analysis',
+            method='POST',
+        ):
+            with self.assertRaises(werkzeug.exceptions.BadRequest) as cm:
+                self.handler.do_post(feature_id=feature_id)
+
+            # Verify the specific error message matches your logic.
+            self.assertEqual(
+                cm.exception.description,
+                (
+                    'Confidential feature information cannot be used to '
+                    'generate WTP coverage reports.'
+                ),
+            )
+
+        # Verify no task was enqueued.
+        mock_enqueue.assert_not_called()
+
+    @mock.patch('framework.permissions.can_edit_feature')
+    def test_do_delete__success(self, mock_can_edit):
+        """User with edit access can delete a WPT coverage report."""
+        mock_can_edit.return_value = True
+
+        # Set initial report data on the feature.
+        self.feature_1.ai_test_eval_report = 'This is a test report.'
+        self.feature_1.ai_test_eval_run_status = (
+            core_enums.AITestEvaluationStatus.COMPLETE.value
+        )
+        self.feature_1.ai_test_eval_status_timestamp = datetime(
+            2024, 5, 20, 15, 30, 0
+        )  # noqa: E501
+        self.feature_1.put()
+
+        feature_id = 123456
+        with test_app.test_request_context(
+            f'/api/v0/features/{feature_id}/wpt-coverage-analysis',
+            method='DELETE',
+        ):
+            response = self.handler.do_delete(feature_id=feature_id)
+
+        self.assertEqual(
+            response, {'message': 'WPT coverage analysis report deleted.'}
+        )
+
+        mock_can_edit.assert_called_once()
+
+        # Verify the feature has been updated.
+        updated_feature = FeatureEntry.get_by_id(123456)
+        self.assertIsNone(updated_feature.ai_test_eval_report)
+        self.assertEqual(
+            updated_feature.ai_test_eval_run_status,
+            core_enums.AITestEvaluationStatus.DELETED.value,
+        )
+        self.assertEqual(
+            updated_feature.ai_test_eval_status_timestamp,
+            datetime(2024, 5, 20, 15, 30, 0),
+        )
+
+    @mock.patch('framework.permissions.can_edit_feature')
+    def test_do_delete__forbidden(self, mock_can_edit):
+        """User without edit access cannot delete a report."""
+        mock_can_edit.return_value = False
+
+        # Set initial report data on the feature.
+        self.feature_1.ai_test_eval_report = 'This is a test report.'
+        self.feature_1.ai_test_eval_run_status = (
+            core_enums.AITestEvaluationStatus.COMPLETE.value
+        )
+        self.feature_1.put()
+
+        feature_id = 123456
+        with test_app.test_request_context(
+            f'/api/v0/features/{feature_id}/wpt-coverage-analysis',
+            method='DELETE',
+        ):
+            with self.assertRaises(werkzeug.exceptions.Forbidden):
+                self.handler.do_delete(feature_id=feature_id)
+
+        mock_can_edit.assert_called_once()
+
+        # Verify the feature was NOT updated.
+        unchanged_feature = FeatureEntry.get_by_id(123456)
+        self.assertEqual(
+            unchanged_feature.ai_test_eval_report, 'This is a test report.'
+        )
+        self.assertEqual(
+            unchanged_feature.ai_test_eval_run_status,
+            core_enums.AITestEvaluationStatus.COMPLETE.value,
+        )

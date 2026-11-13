@@ -35,3 +35,30 @@ cron:
 - description: Check origin trials and associate with their ChromeStatus entry.
   url: /cron/associate_origin_trials
   schedule: every day 6:00
+- description: Send origin trial process reminder emails.
+  url: /cron/send-ot-process-reminders
+  schedule: every monday 10:00
+- description: Check if any origin trials require creation
+  url: /cron/create_origin_trials
+  schedule: every 5 minutes
+- description: Check if any origin trials require activation
+  url: /cron/activate_origin_trials
+  schedule: every day 9:00
+- description: Fetch a new copy of Webdx feature ID list
+  url: /cron/fetch_webdx_feature_ids
+  schedule: every day 9:00
+- description: Generate a CSV of all review activities in ChromeStatus.
+  url: /cron/generate_review_activities
+  schedule: every day 8:00
+- description: Generate a CSV of all stale features with upcoming shipping milestones.
+  url: /cron/generate_stale_features
+  schedule: every day 8:05
+- description: Generate CSVs for all features with upcoming shipping milestones and their missing criteria.
+  url: /cron/generate_shipping_features
+  schedule: every day 8:30
+- description: Reset the shipping milestones of features have not been verified after 4+ notifications.
+  url: /cron/reset_stale_shipping_milestones
+  schedule: every sunday 09:00
+- description: Delete WPT Coverage Report after 180 days
+  url: /cron/delete_old_wpt_coverage_report
+  schedule: every sunday 7:30

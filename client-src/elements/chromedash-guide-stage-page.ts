@@ -1,0 +1,388 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import {LitElement, TemplateResult, css, html, nothing} from 'lit';
+import {ref} from 'lit/directives/ref.js';
+import {
+  getDisabledHelpText,
+  FieldInfo,
+  formatFeatureChanges,
+  getStageValue,
+  parseRawQuery,
+  showToastMessage,
+  setupScrollToHash,
+  shouldShowDisplayNameField,
+  maybeAlertOnLateChange,
+  fetchCurrentBetaMilestone,
+} from './utils.js';
+import './chromedash-form-table.js';
+import './chromedash-form-field.js';
+import {
+  FLAT_TRIAL_EXTENSION_FIELDS,
+  formatFeatureForEdit,
+  FORMS_BY_STAGE_TYPE,
+  MetadataFields,
+} from './form-definition.js';
+import {STAGE_SPECIFIC_FIELDS} from './form-field-enums.js';
+import {ALL_FIELDS} from './form-field-specs.js';
+import {SHARED_STYLES} from '../css/shared-css.js';
+import {FORM_STYLES} from '../css/forms-css.js';
+import {customElement, property, state} from 'lit/decorators.js';
+import {Feature, StageDict} from '../js-src/cs-client.js';
+
+@customElement('chromedash-guide-stage-page')
+export class ChromedashGuideStagePage extends LitElement {
+  static get styles() {
+    return [...SHARED_STYLES, ...FORM_STYLES, css``];
+  }
+
+  @property({attribute: false})
+  stageId = 0;
+  @property({attribute: false})
+  featureId = 0;
+  @property({type: String})
+  appTitle = '';
+  @state()
+  stageName = '';
+  @state()
+  feature = {} as Feature;
+  @state()
+  stage!: StageDict;
+  @state()
+  isActiveStage = false;
+  @state()
+  featureFormFields!: MetadataFields;
+  @state()
+  loading = true;
+  @state()
+  submitting = false;
+  nextFieldIndex = 0;
+  @state()
+  fieldValues: FieldInfo[] & {feature?: Feature} = [];
+  @state()
+  gateId?: number;
+  @state()
+  currentBetaMilestone = 0;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.fetchData();
+  }
+
+  // Handler to update form values when a field update event is fired.
+  handleFormFieldUpdate(event) {
+    const value = event.detail.value;
+    // Index represents which form was updated.
+    const index = event.detail.index;
+    if (index >= this.fieldValues.length) {
+      throw new Error('Out of bounds index when updating field values.');
+    }
+    // The field has been updated, so it is considered touched.
+    this.fieldValues[index].touched = true;
+    this.fieldValues[index].value = value;
+    this.fieldValues[index].isMarkdown = event.detail.isMarkdown;
+  }
+
+  fetchData() {
+    this.loading = true;
+
+    // Check if this is a milestone adjustment to an extension stage.
+    // If it is, we need the corresponding gate ID to redirect after submission.
+    const rawQuery = parseRawQuery(window.location.search);
+    let gatePromise = Promise.resolve();
+    if ('updateExtension' in rawQuery) {
+      gatePromise = window.csClient.getGates(this.featureId);
+    }
+
+    Promise.all([
+      window.csClient.getFeature(this.featureId),
+      window.csClient.getStage(this.featureId, this.stageId),
+      gatePromise,
+      fetchCurrentBetaMilestone(),
+    ])
+      .then(([feature, stage, gates, betaMilestone]) => {
+        this.fieldValues = [];
+        this.feature = feature;
+        this.stage = stage;
+        this.currentBetaMilestone = betaMilestone;
+
+        if (gates) {
+          this.gateId = gates.gates.find(g => g.stage_id === this.stageId)?.id;
+        }
+
+        if (this.feature.name) {
+          document.title = `${this.feature.name} - ${this.appTitle}`;
+        }
+        if (this.feature.active_stage_id === this.stage.id) {
+          this.isActiveStage = true;
+        }
+        this.featureFormFields = FORMS_BY_STAGE_TYPE[stage.stage_type] || {
+          name: '',
+          sections: [],
+        };
+        this.stageName = this.featureFormFields.name;
+        this.loading = false;
+      })
+      .catch(() => {
+        showToastMessage(
+          'Some errors occurred. Please refresh the page or try again later.'
+        );
+      });
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    document.title = this.appTitle;
+  }
+
+  async registerHandlers(el) {
+    if (!el) return;
+
+    /* Add the form's event listener after Shoelace event listeners are attached
+     * see more at https://github.com/GoogleChrome/chromium-dashboard/issues/2014 */
+    await el.updateComplete;
+    const hiddenTokenField = this.renderRoot.querySelector(
+      'input[name=token]'
+    ) as HTMLInputElement;
+    hiddenTokenField.form?.addEventListener('submit', event => {
+      this.handleFormSubmit(event, hiddenTokenField);
+    });
+
+    this.miscSetup();
+    setupScrollToHash(this);
+  }
+
+  handleFormSubmit(e, hiddenTokenField) {
+    e.preventDefault();
+    maybeAlertOnLateChange(
+      this.feature,
+      this.fieldValues,
+      this.currentBetaMilestone
+    );
+    const submitBody = formatFeatureChanges(
+      this.fieldValues,
+      this.featureId,
+      this.stageId
+    );
+    this.submitting = true;
+
+    // get the XSRF token and update it if it's expired before submission
+    window.csClient
+      .ensureTokenIsValid()
+      .then(() => {
+        hiddenTokenField.value = window.csClient.token;
+        return window.csClient.updateFeature(submitBody);
+      })
+      .then(() => {
+        // If we have a set gate ID, we need to redirect the user to finish
+        // initiating their extension.
+        if (this.gateId) {
+          window.location.href = `/feature/${this.featureId}?gate=${this.gateId}&initiateExtension`;
+        } else {
+          window.location.href = `/feature/${this.featureId}`;
+        }
+      })
+      .catch(() => {
+        this.submitting = false;
+        showToastMessage(
+          'Some errors occurred. Please refresh the page or try again later.'
+        );
+      });
+  }
+
+  miscSetup() {
+    // Allow editing if there was already a value specified in this
+    // deprecated field.
+    const timelineField = this.renderRoot.querySelector(
+      '#id_experiment_timeline'
+    ) as HTMLInputElement;
+    if (timelineField && timelineField.value) {
+      timelineField.disabled = false;
+    }
+  }
+
+  handleCancelClick() {
+    window.location.href = `/feature/${this.featureId}`;
+  }
+
+  // get a comma-spearated list of field names
+  getFormFields() {
+    const fields = this.featureFormFields.sections.reduce<string[]>(
+      (combined, section) => [...combined, ...section.fields],
+      []
+    );
+    return fields.join();
+  }
+
+  renderSkeletons() {
+    return html`
+      <h3><sl-skeleton effect="sheen"></sl-skeleton></h3>
+      <section id="metadata">
+        <h3><sl-skeleton effect="sheen"></sl-skeleton></h3>
+        <p>
+          <sl-skeleton effect="sheen"></sl-skeleton>
+          <sl-skeleton effect="sheen"></sl-skeleton>
+          <sl-skeleton effect="sheen"></sl-skeleton>
+          <sl-skeleton effect="sheen"></sl-skeleton>
+          <sl-skeleton effect="sheen"></sl-skeleton>
+          <sl-skeleton effect="sheen"></sl-skeleton>
+          <sl-skeleton effect="sheen"></sl-skeleton>
+          <sl-skeleton effect="sheen"></sl-skeleton>
+        </p>
+      </section>
+    `;
+  }
+
+  getNextPage() {
+    return `/feature/${this.featureId}`;
+  }
+
+  renderSubheader() {
+    return html`
+      <div id="subheader">
+        <h2 id="breadcrumbs">
+          <a href=${this.getNextPage()}>
+            <sl-icon name="arrow-left"></sl-icon>
+            Edit feature: ${this.feature.name}
+          </a>
+        </h2>
+      </div>
+    `;
+  }
+
+  renderFields(formattedFeature, section, feStage?) {
+    if (!feStage) {
+      feStage = this.stage;
+    }
+    return section.fields.map(field => {
+      // Only show "display name" field if there is more than one stage of the same type.
+      if (
+        field === 'display_name' &&
+        !shouldShowDisplayNameField(this.feature.stages, feStage.stage_type)
+      ) {
+        return nothing;
+      }
+      const featureJSONKey = ALL_FIELDS[field].name || field;
+      let value = formattedFeature[field] ?? formattedFeature[featureJSONKey];
+      // The stage ID is only defined for the form field if it is a stage-specific field.
+      let stageId = undefined;
+      if (STAGE_SPECIFIC_FIELDS.has(featureJSONKey)) {
+        value = getStageValue(feStage, featureJSONKey);
+        stageId = feStage.id;
+      }
+
+      // Add the field to this component's stage before creating the field component.
+      const index = this.nextFieldIndex++;
+      if (index >= this.fieldValues.length) {
+        this.fieldValues.push({
+          name: featureJSONKey,
+          touched: false,
+          value,
+          stageId,
+        });
+      } else {
+        value = this.fieldValues[index].value;
+      }
+
+      return html`
+        <chromedash-form-field
+          name=${field}
+          index=${index}
+          value=${value}
+          disabledReason="${getDisabledHelpText(field, feStage)}"
+          .fieldValues=${this.fieldValues}
+          .feature=${formattedFeature}
+          stageId=${feStage.id}
+          ?forEnterprise=${formattedFeature.is_enterprise_feature}
+          @form-field-update="${this.handleFormFieldUpdate}"
+        >
+        </chromedash-form-field>
+      `;
+    });
+  }
+
+  renderSections(formattedFeature, stageSections) {
+    this.nextFieldIndex = 0;
+    const formSections: (typeof nothing | TemplateResult)[] = [];
+
+    stageSections.forEach(section => {
+      formSections.push(html`
+        <h3>${section.name}</h3>
+        <section class="stage_form">
+          ${this.renderFields(formattedFeature, section)}
+        </section>
+      `);
+    });
+
+    if (this.stage.extensions) {
+      let i = 1;
+      for (const extensionStage of this.stage.extensions) {
+        for (const section of FLAT_TRIAL_EXTENSION_FIELDS.sections) {
+          formSections.push(html`
+            <h3>${section.name} ${i}</h3>
+            <section class="stage_form">
+              ${this.renderFields(formattedFeature, section, extensionStage)}
+            </section>
+          `);
+        }
+        i++;
+      }
+    }
+
+    return formSections;
+  }
+
+  renderForm() {
+    const formattedFeature = formatFeatureForEdit(this.feature);
+    this.fieldValues.feature = this.feature;
+    const submitButtonTitle = this.submitting ? 'Submitting...' : 'Submit';
+
+    return html`
+      <form name="feature_form">
+        <input type="hidden" name="token" />
+        <chromedash-form-table ${ref(this.registerHandlers)}>
+          ${this.renderSections(
+            formattedFeature,
+            this.featureFormFields.sections
+          )}
+        </chromedash-form-table>
+        <div class="final_buttons">
+          <input
+            id="submit-button"
+            class="button"
+            type="submit"
+            value=${submitButtonTitle}
+            ?disabled=${this.submitting}
+          />
+          <button
+            id="cancel-button"
+            type="reset"
+            @click=${this.handleCancelClick}
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    `;
+  }
+
+  render() {
+    return html`
+      ${this.renderSubheader()}
+      ${this.loading ? this.renderSkeletons() : this.renderForm()}
+    `;
+  }
+}

@@ -1,0 +1,474 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import {LitElement, css, html, nothing} from 'lit';
+import {customElement, property} from 'lit/decorators.js';
+import {SHARED_STYLES} from '../css/shared-css.js';
+import type {FeatureLink} from '../js-src/cs-client.js';
+import {DETAILS_STYLES} from './chromedash-feature-detail.js';
+import {IMPLEMENTATION_STATUS} from './form-field-enums.js';
+import './chromedash-gantt.js';
+import {enhanceUrl} from './chromedash-link.js';
+import './chromedash-vendor-views.js';
+import {autolink, renderAbsoluteDate, renderRelativeDate} from './utils.js';
+
+@customElement('chromedash-feature-highlights')
+export class ChromedashFeatureHighlights extends LitElement {
+  static get styles() {
+    return [
+      ...SHARED_STYLES,
+      ...DETAILS_STYLES,
+      css`
+        section {
+          margin-bottom: 1em;
+        }
+        section h3 {
+          margin: 24px 0 12px;
+        }
+        section label {
+          font-weight: 500;
+          margin-right: 5px;
+        }
+
+        #consensus li {
+          display: flex;
+        }
+        #consensus li label {
+          width: 125px;
+        }
+
+        #history p {
+          margin-top: var(--content-padding-half);
+        }
+
+        sl-dropdown {
+          float: right;
+          margin-right: -16px;
+          margin-top: -20px;
+        }
+        #archive-feature::part(base) {
+          color: var(--error-color);
+        }
+        .suspended {
+          background: var(--table-header-background);
+        }
+      `,
+    ];
+  }
+
+  @property({attribute: false})
+  feature: any = {};
+
+  @property({attribute: false})
+  featureLinks: FeatureLink[] = [];
+
+  @property({type: Boolean})
+  canDeleteFeature = false;
+
+  @property({type: Boolean})
+  canEditFeature = false;
+
+  isSuspended() {
+    return (
+      this.feature?.browsers.chrome.status.val ===
+      IMPLEMENTATION_STATUS.ON_HOLD[0]
+    );
+  }
+
+  handleArchiveFeature() {
+    this.dispatchEvent(new Event('archive', {bubbles: true, composed: true}));
+  }
+
+  handleSuspend() {
+    this.dispatchEvent(new Event('suspend', {bubbles: true, composed: true}));
+  }
+
+  handleResume() {
+    this.dispatchEvent(new Event('resume', {bubbles: true, composed: true}));
+  }
+
+  renderSummary() {
+    if (this.feature.summary) {
+      const isMarkdown = (this.feature.markdown_fields || []).includes(
+        'summary'
+      );
+
+      const markup = autolink(
+        this.feature.summary,
+        this.featureLinks,
+        isMarkdown
+      );
+      return html`
+        <section id="summary">
+          ${isMarkdown ? markup : html`<p class="preformatted">${markup}</p>`}
+        </section>
+      `;
+    } else {
+      return html``;
+    }
+  }
+
+  renderFeatureContent() {
+    return html`
+      ${this.renderSummary()}
+      ${
+        this.feature.motivation
+          ? html`
+              <section id="motivation">
+                <h3>Motivation</h3>
+                <!-- prettier-ignore -->
+                <p class="preformatted">${autolink(
+                  this.feature.motivation,
+                  this.featureLinks
+                )}</p>
+              </section>
+            `
+          : nothing
+      }
+      ${
+        this.feature.resources?.samples?.length
+          ? html`
+              <section id="demo">
+                <h3>Demos and samples</h3>
+                <ul>
+                  ${this.feature.resources.samples.map(
+                    sampleLink => html`
+                      <li>${enhanceUrl(sampleLink, this.featureLinks)}</li>
+                    `
+                  )}
+                </ul>
+              </section>
+            `
+          : nothing
+      }
+      ${
+        this.feature.resources?.docs?.length
+          ? html`
+              <section id="documentation">
+                <h3>Documentation</h3>
+                <ul>
+                  ${this.feature.resources.docs.map(
+                    docLink => html`
+                      <li>${enhanceUrl(docLink, this.featureLinks)}</li>
+                    `
+                  )}
+                </ul>
+              </section>
+            `
+          : nothing
+      }
+      ${
+        this.feature.standards.spec
+          ? html`
+              <section id="specification">
+                <h3>Specification</h3>
+                <p>
+                  ${enhanceUrl(this.feature.standards.spec, this.featureLinks)}
+                </p>
+                <p>Spec status: ${this.feature.standards.maturity.text}</p>
+              </section>
+            `
+          : this.feature.explainer_links?.length
+            ? html`
+                <section id="specification">
+                  <h3>Explainer(s)</h3>
+                  <ul>
+                    ${this.feature.explainer_links?.map(
+                      link =>
+                        html`<li>${enhanceUrl(link, this.featureLinks)}</li>`
+                    )}
+                  </ul>
+                </section>
+              `
+            : nothing
+      }
+    `;
+  }
+
+  renderEnterpriseFeatureStatus() {
+    return html`
+      ${
+        this.feature.browsers.chrome.owners
+          ? html`
+              <section id="owner">
+                <h3>
+                  ${
+                    this.feature.browsers.chrome.owners.length == 1
+                      ? 'Owner'
+                      : 'Owners'
+                  }
+                </h3>
+                <ul>
+                  ${this.feature.browsers.chrome.owners.map(
+                    owner => html`
+                      <li><a href="mailto:${owner}">${owner}</a></li>
+                    `
+                  )}
+                </ul>
+              </section>
+            `
+          : nothing
+      }
+    `;
+  }
+
+  renderFeatureStatus() {
+    return html`
+      <section id="status">
+        <h3>Status in Chromium</h3>
+        <p>
+          ${
+            this.isSuspended()
+              ? html` <label>Implementation status:</label>
+                  <b>Development work is on hold</b>`
+              : nothing
+          }
+          ${
+            this.feature.browsers.chrome.bug
+              ? html`<chromedash-link
+                  href=${this.feature.browsers.chrome.bug}
+                  .featureLinks=${this.featureLinks}
+                  alwaysInTag
+                  >tracking bug</chromedash-link
+                >`
+              : nothing
+          }
+          <chromedash-gantt .feature=${this.feature}></chromedash-gantt>
+        </p>
+      </section>
+
+      <section id="consensus">
+        <h3>Consensus &amp; Standardization</h3>
+        <div style="font-size:smaller;">
+          After a feature ships in Chrome, the values listed here are not
+          guaranteed to be up to date.
+        </div>
+        <br />
+        <ul>
+          ${
+            this.feature.browsers.ff.view.val
+              ? html`
+                  <li>
+                    <label>Firefox:</label>
+                    <chromedash-vendor-views
+                      href=${this.feature.browsers.ff.view.url || nothing}
+                      .featureLinks=${this.featureLinks}
+                      >${
+                        this.feature.browsers.ff.view.text
+                      }</chromedash-vendor-views
+                    >
+                  </li>
+                `
+              : nothing
+          }
+          ${
+            this.feature.browsers.safari.view.val
+              ? html`
+                  <li>
+                    <label>WebKit:</label>
+                    <chromedash-vendor-views
+                      href=${this.feature.browsers.safari.view.url || nothing}
+                      .featureLinks=${this.featureLinks}
+                      >${
+                        this.feature.browsers.safari.view.text
+                      }</chromedash-vendor-views
+                    >
+                  </li>
+                `
+              : nothing
+          }
+          <li>
+            <label>Web Developers:</label> ${
+              this.feature.browsers.webdev.view.text
+            }
+          </li>
+        </ul>
+      </section>
+
+      ${
+        this.feature.browsers.chrome.owners
+          ? html`
+              <section id="owner">
+                <h3>
+                  ${
+                    this.feature.browsers.chrome.owners.length == 1
+                      ? 'Owner'
+                      : 'Owners'
+                  }
+                </h3>
+                <ul>
+                  ${this.feature.browsers.chrome.owners.map(
+                    owner => html`
+                      <li><a href="mailto:${owner}">${owner}</a></li>
+                    `
+                  )}
+                </ul>
+              </section>
+            `
+          : nothing
+      }
+      ${
+        this.feature.intent_to_implement_url
+          ? html`
+              <section id="intent_to_implement_url">
+                <h3>Intent to Prototype url</h3>
+                <a href=${this.feature.intent_to_implement_url}
+                  >Intent to Prototype thread</a
+                >
+              </section>
+            `
+          : nothing
+      }
+      ${
+        this.feature.comments
+          ? html`
+              <section id="comments">
+                <h3>Comments</h3>
+                <!-- prettier-ignore -->
+                <p class="preformatted">${autolink(
+                  this.feature.comments,
+                  this.featureLinks
+                )}</p>
+              </section>
+            `
+          : nothing
+      }
+      <section id="metadata">
+        <h3>Metadata</h3>
+        <p>
+          <label>Feature type:</label>
+          ${this.feature.feature_type}
+        </p>
+        <p>
+          <label>Web feature ID:</label>
+          ${this.feature.web_feature}
+        </p>
+        <p>
+          <label>Blink components:</label>
+          ${this.feature.browsers.chrome.blink_components.map(
+            c => html`
+              <a
+                href="https://issues.chromium.org/issues?q=customfield1222907:%22${c}%22"
+                target="_blank"
+                rel="noopener"
+                >${c}</a
+              >
+            `
+          )}
+        </p>
+        ${
+          this.feature.tags?.length
+            ? html` <p>
+                <label>Search tags:</label>
+                ${this.feature.tags.map(
+                  tag => html`
+                    <a href="/features?q=tag:${tag}">${tag}</a
+                    ><span class="conditional-comma">, </span>
+                  `
+                )}
+              </p>`
+            : nothing
+        }
+      </section>
+    `;
+  }
+
+  renderHistory() {
+    return html`
+      <section id="history">
+        <h3>History</h3>
+        <p>
+          Entry created on
+          ${renderAbsoluteDate(this.feature.created?.when, true)}
+          ${renderRelativeDate(this.feature.created?.when)}
+        </p>
+        <p>
+          Last updated on
+          ${renderAbsoluteDate(this.feature.updated?.when, true)}
+          ${renderRelativeDate(this.feature.updated?.when)}
+        </p>
+
+        <p>
+          <a href="/feature/${this.feature.id}/activity">
+            All comments &amp; activity
+          </a>
+        </p>
+      </section>
+    `;
+  }
+
+  renderDotDotDotMenu() {
+    if (!this.canDeleteFeature && !this.canEditFeature) {
+      return nothing;
+    }
+    let archiveItem = html``;
+    let suspendItem = html``;
+    let resumeItem = html``;
+
+    if (this.canDeleteFeature) {
+      archiveItem = html`
+        <sl-menu-item id="archive-feature" @click=${this.handleArchiveFeature}>
+          Archive feature
+        </sl-menu-item>
+      `;
+    }
+
+    if (this.canEditFeature) {
+      if (this.isSuspended()) {
+        resumeItem = html`
+          <sl-menu-item @click=${this.handleResume}>
+            Resume active development
+          </sl-menu-item>
+        `;
+      } else {
+        suspendItem = html`
+          <sl-menu-item @click=${this.handleSuspend}>
+            Suspend development
+          </sl-menu-item>
+        `;
+      }
+    }
+
+    return html`
+      <sl-dropdown placement="left-start">
+        <sl-icon-button
+          library="material"
+          name="more_vert_24px"
+          label="Feature menu"
+          style="font-size: 1.3rem;"
+          slot="trigger"
+        ></sl-icon-button>
+        <sl-menu> ${suspendItem} ${resumeItem} ${archiveItem} </sl-menu>
+      </sl-dropdown>
+    `;
+  }
+
+  render() {
+    return html`
+      <sl-details summary="Overview" ?open=${true}>
+        <section class="card ${this.isSuspended() ? 'suspended' : ''}">
+          ${this.renderDotDotDotMenu()} ${this.renderFeatureContent()}
+          ${
+            this.feature.is_enterprise_feature
+              ? this.renderEnterpriseFeatureStatus()
+              : this.renderFeatureStatus()
+          }
+          ${this.renderHistory()}
+        </section>
+      </sl-details>
+    `;
+  }
+}

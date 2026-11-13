@@ -1,0 +1,173 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import {TemplateResult, html, nothing} from 'lit';
+import SlTextarea from '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
+import {customElement, property, state} from 'lit/decorators.js';
+import {autolink} from './utils.js';
+
+// @ts-expect-error ts(1238)
+@customElement('chromedash-textarea')
+export class ChromedashTextarea extends SlTextarea {
+  @property({type: Boolean})
+  multiple;
+  @property({type: String})
+  pattern;
+  @property({type: String})
+  chromedash_single_pattern;
+  @property({type: String})
+  chromedash_split_pattern;
+  @property({type: Number})
+  cols = 50;
+  @property({type: Number})
+  rows = 10;
+  @property({type: Boolean})
+  offerMarkdown = false;
+  @property({type: Boolean})
+  isMarkdown = false;
+  @property({type: Boolean})
+  alwaysMarkdown = false;
+  @property({type: Number}) // Represents which field this is on the form.
+  index = -1;
+  @state()
+  showPreview = false;
+
+  /**
+   * Checks whether the value conforms to custom validation constraints.
+   * @return true if value is valid.
+   */
+  customCheckValidity(value: string): boolean {
+    if (this.multiple) {
+      if (this.chromedash_split_pattern && this.chromedash_single_pattern) {
+        const items = value.split(new RegExp(this.chromedash_split_pattern));
+        const singleItemRegex = new RegExp(
+          '^' + this.chromedash_single_pattern + '$',
+          ''
+        );
+        const valid = items.every(item => {
+          if (!item) {
+            // ignore empty items
+            return true;
+          }
+          const itemValid = singleItemRegex.test(item);
+          return itemValid;
+        });
+        if (!valid) {
+          return false;
+        }
+      }
+    }
+    // If there is a pattern, and the value doesn't match the pattern, then fail.
+    // This applies regardless whether this.multiple is true.
+    if (this.pattern) {
+      const valueRegex = new RegExp('^' + this.pattern + '$', '');
+      return valueRegex.test(value);
+    }
+    // Otherwise, assume it is valid.  What about required? disabled?
+    return true;
+  }
+
+  validate() {
+    if (this.input === null) {
+      return;
+    }
+    const invalidMsg = this.customCheckValidity(this.input.value)
+      ? ''
+      : 'invalid';
+    if (this.setCustomValidity) {
+      this.setCustomValidity(invalidMsg);
+    }
+  }
+
+  firstUpdated() {
+    super.firstUpdated();
+    this.validate();
+  }
+
+  updated(changedProperties) {
+    super.updated(changedProperties);
+    if (!this.input) {
+      return;
+    }
+    this.validate();
+  }
+
+  handleMarkdownChecked(e) {
+    this.isMarkdown = Boolean(e.target?.checked);
+    if (!this.isMarkdown) {
+      this.showPreview = false;
+    }
+    // Note: The sl-change event continues to propagate to chromedash-form-field.
+  }
+
+  handlePreviewChecked(e) {
+    this.showPreview = Boolean(e.target?.checked);
+    e.stopPropagation();
+  }
+
+  render() {
+    const editor = super.render();
+    if (!this.offerMarkdown && !this.alwaysMarkdown) {
+      return editor;
+    }
+
+    // Since this class subclasses SlTextarea, we need to render (but
+    // not display) the content from that class, otherwise there will
+    // be errors in validation code.
+    return html`
+      <div style=${this.showPreview ? 'display:none' : ''}>${editor}</div>
+      ${
+        this.showPreview
+          ? html`
+              <div
+                id="preview"
+                style="border:var(--card-border); padding:0 var(--content-padding); min-height:14em; background:var(--table-alternate-background)"
+              >
+                ${autolink(this.value, [], true)}
+              </div>
+            `
+          : nothing
+      }
+      <sl-checkbox
+        id="use-markdown"
+        name="${this.name}_is_markdown"
+        ?checked=${this.isMarkdown || this.alwaysMarkdown}
+        ?disabled=${this.alwaysMarkdown}
+        @sl-change=${this.handleMarkdownChecked}
+      >
+        Use markdown
+      </sl-checkbox>
+      <sl-icon-button
+        name="info-circle"
+        id="info-button"
+        title="GitHub flavored markdown docs"
+        href="https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax"
+        target="_blank"
+      ></sl-icon-button>
+      ${
+        this.isMarkdown || this.alwaysMarkdown
+          ? html` <sl-checkbox
+              id="show-preview"
+              ?checked=${this.showPreview}
+              @sl-change=${this.handlePreviewChecked}
+            >
+              Preview
+            </sl-checkbox>`
+          : nothing
+      }
+    `;
+  }
+}

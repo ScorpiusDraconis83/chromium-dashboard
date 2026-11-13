@@ -1,0 +1,121 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import {html} from 'lit';
+import {assert, fixture} from '@open-wc/testing';
+import {ChromedashEnterprisePage} from './chromedash-enterprise-page.js';
+import './chromedash-toast.js';
+import {ChromeStatusClient} from '../js-src/cs-client.js';
+import sinon from 'sinon';
+
+describe('chromedash-enterprise-page', () => {
+  /* window.csClient and <chromedash-toast> are initialized at spa.html
+   * which are not available here, so we initialize them before each test.
+   * We also stub out the API calls here so that they return test data. */
+  let getStarsStub: sinon.SinonStub;
+  let searchFeaturesStub: sinon.SinonStub;
+  beforeEach(async () => {
+    await fixture(html`<chromedash-toast></chromedash-toast>`);
+    window.csClient = new ChromeStatusClient('fake_token', 1);
+    getStarsStub = sinon.stub(window.csClient, 'getStars');
+    searchFeaturesStub = sinon.stub(window.csClient, 'searchFeatures');
+    getStarsStub.returns(Promise.resolve([123456]));
+  });
+
+  afterEach(() => {
+    getStarsStub.restore();
+    searchFeaturesStub.restore();
+  });
+
+  it('render with no data', async () => {
+    const invalidFeaturePromise = Promise.reject(
+      new Error('Got error response from server')
+    );
+    searchFeaturesStub.returns(invalidFeaturePromise);
+    const component = await fixture(
+      html`<chromedash-enterprise-page></chromedash-enterprise-page>`
+    );
+    assert.exists(component);
+    assert.instanceOf(component, ChromedashEnterprisePage);
+
+    // error response would trigger the toast to show message
+    const toastEl = document.querySelector('chromedash-toast');
+    const toastMsgSpan = toastEl!.shadowRoot!.querySelector('span#msg');
+    assert.include(
+      toastMsgSpan!.innerHTML,
+      'Some errors occurred. Please refresh the page or try again later.'
+    );
+  });
+
+  it('render with fake data', async () => {
+    const validFeaturePromise = Promise.resolve({
+      total_count: 1,
+      features: [
+        {
+          id: 123456,
+          name: 'feature one',
+        },
+      ],
+    });
+    const user = {
+      can_create_feature: true,
+      can_edit_all: true,
+      is_admin: false,
+      email: 'example@gmail.com',
+      editable_features: [],
+    };
+    searchFeaturesStub.returns(validFeaturePromise);
+    const component = await fixture(
+      html`<chromedash-enterprise-page .user=${user}>
+      </chromedash-enterprise-page>`
+    );
+    assert.exists(component);
+    assert.instanceOf(component, ChromedashEnterprisePage);
+
+    // feature table exists
+    const featureTableEl = component.shadowRoot!.querySelector(
+      'chromedash-feature-table'
+    );
+    assert.exists(featureTableEl);
+
+    // title exists
+    const titleEl = component.shadowRoot!.querySelector('h2');
+    assert.include(
+      titleEl!.innerHTML,
+      'Enterprise features and breaking changes'
+    );
+  });
+
+  it('passes start and num pagination properties to feature table', async () => {
+    searchFeaturesStub.returns(
+      Promise.resolve({
+        total_count: 150,
+        features: [{id: 123456, name: 'feature one'}],
+      })
+    );
+    const component = await fixture<ChromedashEnterprisePage>(
+      html`<chromedash-enterprise-page
+        .rawQuery=${{start: '50', num: '25'}}
+      ></chromedash-enterprise-page>`
+    );
+    const featureTableEl = component.shadowRoot!.querySelector(
+      'chromedash-feature-table'
+    ) as any;
+    assert.exists(featureTableEl);
+    assert.equal(featureTableEl.start, 50);
+    assert.equal(featureTableEl.num, 25);
+  });
+});

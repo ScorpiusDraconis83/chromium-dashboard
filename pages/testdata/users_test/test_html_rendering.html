@@ -23,7 +23,7 @@ limitations under the License.
 
   <meta name="theme-color" content="#366597">
 
-  <link rel="stylesheet" href="/static/css/base.css?v=Undeployed" />
+  <link rel="stylesheet" href="/static/dist/styles.css?v=Undeployed" />
 
   <link rel="icon" sizes="192x192" href="/static/img/crstatus_192.png">
 
@@ -56,19 +56,24 @@ limitations under the License.
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get("loginStatus") == 'False') {
       alert('Please log in.');
+      window.location.replace('/');
+    } else {
+      if (urlParams.get("error") == '403') {
+        alert('You do not have permission to access that page. You may need to sign in with an authorized account.');
+      }
+      if (urlParams.has("error")) {
+        urlParams.delete("error");
+        const newSearch = urlParams.toString() ? '?' + urlParams.toString() : '';
+        window.history.replaceState({}, document.title, window.location.pathname + newSearch + window.location.hash);
+      }
     }
   </script>
-  <script nonce="fake nonce" src="/static/js/metric.min.js?v=Undeployed"></script>
-  <script nonce="fake nonce" src="/static/js/cs-client.min.js?v=Undeployed"></script>
-
-  
-  <script nonce="fake nonce">
+  <script type="module" nonce="fake nonce">
+    import {ChromeStatusClient} from "/static/dist/cs-client.js?v=Undeployed"
     window.csClient = new ChromeStatusClient(
         '', 0);
-  </script>
 
-  
-  <script type="module" nonce="fake nonce">
+    
     const drawer = document.querySelector('chromedash-drawer');
     const header = document.querySelector('chromedash-header');
     header.addEventListener('drawer-clicked', (e) => {
@@ -84,7 +89,7 @@ limitations under the License.
   
 </head>
 
-<body class="loading" data-path="/request_path?">
+<body class="loading non-prod" data-path="/request_path?">
 
   <div id="app-content-container">
     <div>
@@ -100,9 +105,6 @@ limitations under the License.
       </div>
 
       <div id="content">
-        <div id="spinner">
-          <img src="/static/img/ring.svg">
-        </div>
         <div>
           <chromedash-drawer
             currentPage="/request_path?"
@@ -113,8 +115,8 @@ limitations under the License.
           message=""
           timestamp="None">
         </chromedash-banner>
-        <div id="rollout">
-          <a href="/newfeatures">Try out our new features page</a>
+        <div id="spinner">
+          <img src="/static/img/ring.svg">
         </div>
         <div id="content-flex-wrapper">
           <div id="content-component-wrapper">
@@ -138,8 +140,6 @@ limitations under the License.
     <chromedash-footer></chromedash-footer>
   </div>
 
-  <chromedash-toast msg="Welcome to chromestatus.com!"></chromedash-toast>
-
   
 
   
@@ -155,6 +155,6 @@ limitations under the License.
           async nonce="fake nonce"></script>
 
   
-  <script type="module" nonce="fake nonce" src="/static/js/shared.min.js?v=Undeployed"></script>
+  <script type="module" nonce="fake nonce" src="/static/dist/shared.js?v=Undeployed"></script>
 </body>
 </html>

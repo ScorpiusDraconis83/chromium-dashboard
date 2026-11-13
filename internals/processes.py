@@ -13,24 +13,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Defines the feature launch processes, stages, progress items, and rules for required approvals and fields."""
+
 from dataclasses import asdict, dataclass
 
-from internals import approval_defs
+import settings
 from internals import core_enums
-from internals import core_models
-from internals import stage_helpers
+from internals.core_models import Stage
+from internals.review_models import Gate
+
+REQUEST_REVIEW_ACTION_URL = 'request review'
 
 
 @dataclass
 class Action:
-  name: str
-  url: str
-  prerequisites: list[str]
+    """Dataclass for Action, such as requesting a review or OT."""
+
+    name: str
+    url: str  # Or, special value REQUEST_REVIEW_ACTION_URL
+    prerequisites: list[str]
+    gate_types: list[int]
+
 
 @dataclass
 class ProgressItem:
-  name: str
-  field: str | None = None
+    """Dataclass for ProgressItem that has details of a prerequisite."""
+
+    name: str
+    field: str | None = None
+    description: str | None = None
+    criteria: str | None = None
+
 
 # Note: A new feature always starts with intent_stage == INTENT_NONE
 # regardless of process.  intent_stage is set to the first stage of
@@ -38,125 +51,381 @@ class ProgressItem:
 # a form that sets intent_stage.
 @dataclass
 class ProcessStage:
-  name: str
-  description: str
-  progress_items: list[ProgressItem]
-  actions: list[Action]
-  approvals: list[approval_defs.ApprovalFieldDef]
-  incoming_stage: int
-  outgoing_stage: int
-  stage_type: int | None
+    """Dataclass for ProcessStage that describes one major step in a process."""
+
+    name: str
+    description: str
+    # progress_items are defined on the stage that has the relevant fields.
+    progress_items: list[ProgressItem]
+    # action prerequisites may reference a PI defined in any stage.
+    actions: list[Action]
+    stage_type: int | None
+
 
 @dataclass
 class Process:
-  name: str
-  description: str
-  applicability: str
-  stages: list[ProcessStage]
+    """Dataclass for Process that describes all stages for a given feature type."""
+
+    name: str
+    description: str
+    applicability: str
+    stages: list[ProcessStage]
 
 
 def process_to_dict(process):
-  """Return nested dicts for the nested dataclasses of a process."""
-  # asdict() will recursively convert any dataclass props to dicts.
-  stages = [asdict(stage) for stage in process.stages]
-  process_dict = {
-      'name': process.name,
-      'description': process.description,
-      'applicability': process.applicability,
-      'stages': stages,
-  }
-  return process_dict
+    """Return nested dicts for the nested dataclasses of a process."""
+    # asdict() will recursively convert any dataclass props to dicts.
+    stages = [asdict(stage) for stage in process.stages]
+    process_dict = {
+        'name': process.name,
+        'description': process.description,
+        'applicability': process.applicability,
+        'stages': stages,
+    }
+    return process_dict
 
 
 # This page generates a preview of an email that can be sent
 # to a mailing list to announce an intent.
-# {feature_id} and {outgoing_stage} are filled in by JS code.
-# The param "intent" adds clauses the template to include details
-# needed for an intent email.  The param "launch" causes those
-# details to be omitted and a link to create a launch bug shown instead.
-INTENT_EMAIL_URL = ('/admin/features/launch/{feature_id}'
-                    '/{outgoing_stage}'
-                    '?intent=1')
+# {feature_id}, {stage_id}, and {gate_id} are filled in by JS code.
+INTENT_EMAIL_URL = '/feature/{feature_id}/gate/{gate_id}/intent'
+INTENT_EMAIL_URL_NO_APPROVALS = '/feature/{feature_id}/stage/{stage_id}/intent'
 LAUNCH_BUG_TEMPLATE_URL = '/admin/features/launch/{feature_id}?launch=1'
 # TODO(jrobbins): Creation of the launch bug has been a TODO for 5 years.
 
+# Metadata progress items
+PI_FEATURE_NAME = ProgressItem(
+    'Feature name',
+    'name',
+    'Feature name is clear, accurate, and not a placeholder',
+    (
+        'Not a bug number, internal codename, or "TBD". '
+        'Matches the intent email subject.'
+    ),
+)
+
+PI_FEATURE_NAME_DEP = ProgressItem(
+    'Feature name dep',
+    'name',
+    (
+        'The name should start with some combination of "Deprecate" or "Remove" '
+        'and then clearly name the feature that is being deprecated.'
+    ),
+    (
+        'Not a bug number, internal codename, or "TBD". '
+        'Matches the intent email subject.'
+    ),
+)
+
+PI_SUMMARY = ProgressItem(
+    'Summary',
+    'summary',
+    'Summary is complete, developer-facing, and ≥ 100 characters',
+    (
+        'Explains what the feature does, why it matters, and how developers use it. '
+        'Not a copy of the spec title.<br>'
+        '<br>'
+        'Note: The summary should use the present tense for these descriptions '
+        '(e.g., "we launch") instead of the future tense. Since these notes are '
+        'published at the time of shipment, they should reflect how the product works '
+        'at the point of release.'
+    ),
+)
+
+PI_SUMMARY_DEP_TIMELINE = ProgressItem(
+    'Summary dep timeline',
+    'summary',
+    'Summary clearly states the reason for deprecation and the timeline.',
+    (
+        'Must explain why the feature is being deprecated and when developers '
+        'should expect removal.'
+    ),
+)
+
+PI_SUMMARY_DEP_ALTERNATIVES = ProgressItem(
+    'Summary dep alternatives',
+    'summary',
+    (
+        'Alternative APIs or migration path is documented in the summary and/or '
+        'linked doc.'
+    ),
+    (
+        'Developers must be able to find what to use instead. Link to MDN, '
+        'web.dev, or an explainer.'
+    ),
+)
+
+PI_SUMMARY_POLICY = ProgressItem(
+    'Policy in summary',
+    'summary',
+    'If enterprise policy applies, policy name is stated in the summary',
+    (
+        'Required when the feature has an enterprise escape-hatch policy. '
+        'Name must match the policy registry.'
+    ),
+)
+
+PI_SUMMARY_POLICY_DEP = ProgressItem(
+    'Policy in summary dep',
+    'summary',
+    'Enterprise escape-hatch policy is named in the summary (if applicable)',
+    (
+        'If an enterprise policy allows deferral of the deprecation, its exact '
+        'name must appear in the summary ≥ 3 milestones before stable.'
+    ),
+)
+
+PI_CATEGORY = ProgressItem(
+    'Category',
+    'category',
+    'Feature category is correctly set (e.g. CSS, JavaScript, Web APIs)',
+    (
+        'Must match the nature of the feature. Wrong category routes the feature '
+        'into the wrong blog section.'
+    ),
+)
+
+PI_FEATURE_TYPE = ProgressItem(
+    'Feature type',
+    'feature_type',
+    'Feature type matches the feature description',
+    'Drives which stages and gates apply. Cannot be changed after creation.',
+)
+
+PI_OWNER_EMAILS = ProgressItem(
+    'Owner emails',
+    'owner_emails',
+    'At least one feature owner email is present and valid',
+    (
+        'Non-empty, valid email format, not a departed owner. '
+        'Update if the owner has left.'
+    ),
+)
+
 
 PI_INITIAL_PUBLIC_PROPOSAL = ProgressItem(
-    'Initial public proposal', 'initial_public_proposal_url')
-PI_MOTIVATION = ProgressItem('Motivation', 'motivation')
-PI_EXPLAINER = ProgressItem('Explainer', 'explainer_links')
+    'Initial public proposal',
+    'initial_public_proposal_url',
+    'Link to an initial public proposal in the relevant incubation venue.',
+    'https://www.chromium.org/blink/launching-features/#incubation-venue',
+)
 
-PI_SPEC_LINK = ProgressItem('Spec link', 'spec_link')
-PI_SPEC_MENTOR = ProgressItem('Spec mentor', 'spec_mentors')
-PI_DRAFT_API_SPEC = ProgressItem('Draft API spec')
-PI_I2P_EMAIL = ProgressItem(
-    'Intent to Prototype email', 'intent_to_implement_url')
+PI_MOTIVATION = ProgressItem(
+    'Motivation',
+    'motivation',
+    'Motivation summarizes the reasons we want to add/modify/remove behavior',
+    '',
+)
 
-PI_SAMPLES = ProgressItem('Samples', 'sample_links')
-PI_DRAFT_API_OVERVIEW = ProgressItem('Draft API overview (may be on MDN)')
-PI_REQUEST_SIGNALS = ProgressItem('Request signals', 'safari_views')
-PI_SEC_REVIEW = ProgressItem('Security review issues addressed')
-PI_PRI_REVIEW = ProgressItem('Privacy review issues addressed')
-# TODO(jrobbins): needs detector.
-PI_EXTERNAL_REVIEWS = ProgressItem('External reviews')
-PI_R4DT_EMAIL = ProgressItem(
-    'Ready for Developer Testing email', 'announcement_url')
+PI_EXPLAINER = ProgressItem(
+    'Explainer',
+    'explainer_links',
+    'Explainer document is linked and resolves (new incubations only)',
+    (
+        'Required for new feature incubations. Must include use cases, '
+        'sample code, and API shape. N/A for standard implementations.'
+    ),
+)
 
-PI_TAG_REQUESTED = ProgressItem('TAG review requested', 'tag_review')
-PI_VENDOR_SIGNALS = ProgressItem('Vendor signals', 'safari_views')
-PI_WEB_DEV_SIGNALS = ProgressItem('Web developer signals', 'web_dev_views')
-PI_DOC_LINKS = ProgressItem('Doc links', 'doc_links')
-# TODO(jrobbins): needs detector.
-PI_DOC_SIGNOFF = ProgressItem('Documentation signoff')
-PI_EST_TARGET_MILESTONE = ProgressItem(
-    'Estimated target milestone', 'shipped_milestone')
+PI_WEB_FEATURE = ProgressItem(
+    'Web feature',
+    'web_feature',
+    'Web Feature ID (WebDX / web-features ID) is set or confirmed N/A',
+    (
+        'If a matching WebDX web-features ID exists (e.g. "fetch", "grid"), '
+        'it must be set. If no web-features entry exists yet, note this. '
+        'Enables Baseline status linking on webstatus.dev, MDN, and Can I Use.'
+    ),
+)
 
-# TODO(jrobbins): needs detector.
-PI_OT_REQUEST = ProgressItem('OT request')
-# TODO(jrobbins): needs detector.
-PI_OT_AVAILABLE = ProgressItem('OT available')
-# TODO(jrobbins): needs detector.
-PI_OT_RESULTS = ProgressItem('OT results')
-PI_I2E_EMAIL = ProgressItem(
-    'Intent to Experiment email', 'intent_to_experiment_url')
-PI_I2E_LGTMS = ProgressItem('One LGTM on Intent to Experiment')
+PI_TRACKING_BUG = ProgressItem(
+    'Tracking bug URL',
+    'bug_url',
+    'Chromium tracking bug URL is present and resolves (HTTP 200)',
+    'bugs.chromium.org URL pattern. Must open and reflect current status.',
+)
 
-PI_MIGRATE_INCUBATION = ProgressItem('Request to migrate incubation')
+PI_BLINK_COMPONENTS = ProgressItem(
+    'Blink components',
+    'blink_components',
+    'Blink component is not a generic catch-all (e.g. not just "Blink")',
+    (
+        'Drives reviewer notifications. Verify it maps to the correct owning team.'
+    ),
+)
+
+PI_SPEC_LINK = ProgressItem(
+    'Spec link',
+    'spec_link',
+    (
+        'Specification link is present, resolves (HTTP 200), '
+        'and points to the correct section'
+    ),
+    (
+        'Not a redirect to the spec homepage. Expected hosts: '
+        'w3.org, whatwg.org, wicg.github.io, tc39.es, khronos.org.'
+    ),
+)
+
+PI_SPEC_MATURITY = ProgressItem(
+    'Spec Maturity',
+    'standard_maturity',
+    'Specification maturity / standards track status is current and accurate',
+    (
+        "Should reflect actual status: Editor's Draft, In Development, "
+        'Shipped, etc. Not stale.'
+    ),
+)
+
+PI_SAMPLES = ProgressItem(
+    'Samples',
+    'sample_links',
+    'Sample code or live demo is available',
+    (
+        'At minimum a basic usage example: CodePen, Glitch, GitHub demo, '
+        "or MDN 'Examples' section."
+    ),
+)
+
+PI_TAG_REQUESTED = ProgressItem(
+    'TAG review requested',
+    'tag_review',
+    'TAG review is linked, or explicitly noted as N/A with justification',
+    (
+        'W3C TAG review link (github.com/w3ctag) should be present. '
+        'Missing without justification is a flag.'
+    ),
+)
+
+PI_DOC_LINKS_OUTREACH = ProgressItem(
+    'Doc links outreach',
+    'doc_links',
+    (
+        'For high-impact features: DevRel / developer outreach is confirmed: '
+        'e.g., blog post, I/O talk, or Chrome Developers article'
+    ),
+    (
+        'For high-impact features: confirm at least one external communication '
+        'is planned or published.'
+    ),
+)
+
+PI_DOC_LINKS_AUTOMATION = ProgressItem(
+    'Doc links automation',
+    'doc_links',
+    'WebDriver / automation API impact is assessed and documented',
+    (
+        'If the feature changes observable browser automation behavior, the '
+        'impact must be communicated.'
+    ),
+)
+
 PI_TAG_ADDRESSED = ProgressItem(
-    'TAG review issues addressed', 'tag_review_status')
-PI_UPDATED_VENDOR_SIGNALS = ProgressItem(
-    'Updated vendor signals', 'safari_views')
-PI_UPDATED_TARGET_MILESTONE = ProgressItem(
-    'Updated target milestone', 'shipped_milestone')
+    'TAG review issues addressed',
+    'tag_review_status',
+    'TAG review status indicates issues were addressed or N/a.',
+    'TAG review status indicates issues were addressed or N/a.',
+)
+
+PI_FIREFOX_VIEWS = ProgressItem(
+    'Firefox views',
+    'ff_views',
+    'Gecko (Firefox) signal is recorded and not blank',
+    (
+        'Valid values: Positive, Neutral, Negative, No signal. Link to '
+        'standards-positions issue or intent thread. If N/A, a justification '
+        'must be present (e.g. Chrome-specific, no cross-browser relevance).'
+    ),
+)
+
+PI_SAFARI_VIEWS = ProgressItem(
+    'Safari views',
+    'safari_views',
+    'WebKit (Safari) signal is recorded and not blank',
+    (
+        'Valid values: Positive, Neutral, Negative, No signal. Link to '
+        'standards-positions issue or intent thread. If N/A, a justification '
+        'must be present (e.g. Chrome-specific, no cross-browser relevance).'
+    ),
+)
+
+PI_INTEROP_RISKS = ProgressItem(
+    'Interop risks',
+    'interop_compat_risks',
+    (
+        'Interoperability & compatibility risks field is filled in or N/A with '
+        'reason provided'
+    ),
+    'Should reference caniuse signals, or web compat team analysis.',
+)
+
+PI_WEB_DEV_VIEWS = ProgressItem(
+    'Web developer views',
+    'web_dev_views',
+    'Web developer views are documented or N/A',
+    (
+        'Evidence of developer interest: GitHub issues, surveys, origin trial '
+        'feedback reports.'
+    ),
+)
+
+PI_DESKTOP_MILESTONE = ProgressItem(
+    'Updated desktop milestone',
+    'shipped_milestone',
+    (
+        'Desktop Chrome milestone is set to a concrete future version '
+        'number (not 0 or TBD)'
+    ),
+    (
+        'Verify the milestone is plausible against the current Chrome '
+        'release schedule.'
+    ),
+)
+
+PI_ANDROID_MILESTONE = ProgressItem(
+    'Updated android milestone',
+    'shipped_android_milestone',
+    'Android milestone is set.  Deviation from desktop is justified.',
+    'Should match the desktop unless there is an explicit reason documented.',
+)
+
+PI_WEBVIEW_MILESTONE = ProgressItem(
+    'Updated webview milestone',
+    'shipped_webview_milestone',
+    'Webview milestone is set, or blank with reason provided.',
+    'Blank without justification needs follow-up.',
+)
+
 PI_FINCH_FEATURE_OR_JUSTIFY = ProgressItem(
     'Finch feature name or non-finch justification',
-    'finch_name')
-PI_I2S_EMAIL = ProgressItem('Intent to Ship email', 'intent_to_ship_url')
-PI_I2S_LGTMS = ProgressItem('Three LGTMs on Intent to Ship')
+    'finch_name',
+    'Finch flag name is documented, or non-Finch rollout is explicitly justified',
+    (
+        'If using Finch: flag name is recorded. If not: justification must be '
+        'present in the justification text field.'
+    ),
+)
 
-# TODO(jrobbins): needs detector.
-PI_FINAL_VENDOR_SIGNALS = ProgressItem('Final vendor signals', 'safari_views')
-# TODO(jrobbins): needs detector.
-PI_FINAL_TARGET_MILESTONE = ProgressItem(
-    'Final target milestone', 'shipped_milestone')
+PI_DEP_CONSOLE_WARNING = ProgressItem(
+    'Deprecation console warning',
+    'debuggability',
+    'Deprecation console warning is implemented in Chrome DevTools',
+    (
+        'Warning must point to the chromestatus entry or documentation page. '
+        'Verify in a Dev channel build.'
+    ),
+)
 
-PI_CODE_IN_CHROMIUM = ProgressItem('Code in Chromium')
+PI_USECOUNTER_DEP = ProgressItem(
+    'UseCounter for deprecation',
+    'measurement',
+    'Usage data (UseCounter / UMA) confirms low-enough usage to proceed',
+    (
+        'Features with > 0.1% page load usage require additional scrutiny '
+        'and broader communication.'
+    ),
+)
 
-PI_PSA_EMAIL = ProgressItem('Web facing PSA email')
-
-# TODO(jrobbins): needs detector.
-PI_DT_REQUEST = ProgressItem('DT request')
-# TODO(jrobbins): needs detector.
-PI_DT_AVAILABLE = ProgressItem('DT available')
-# TODO(jrobbins): needs detector.
-PI_REMOVAL_OF_DT = ProgressItem('Removal of DT')
-PI_DT_EMAIL = ProgressItem(
-    'Request for Deprecation Trial email', 'intent_to_experiment_url')
-PI_DT_LGTMS = ProgressItem(
-    'One LGTM on Request for Deprecation Trial')
-
-# TODO(jrobbins): needs detector.
-PI_EXISTING_FEATURE = ProgressItem('Link to existing feature')
 
 PI_CODE_REMOVED = ProgressItem('Code removed')
 
@@ -164,399 +433,685 @@ PI_ROLLOUT_IMPACT = ProgressItem('Rollout impact', 'rollout_impact')
 PI_ROLLOUT_MILESTONE = ProgressItem('Rollout milestone', 'rollout_milestone')
 PI_ROLLOUT_PLATFORMS = ProgressItem('Rollout platforms', 'rollout_platforms')
 PI_ROLLOUT_DETAILS = ProgressItem('Rollout details', 'rollout_details')
-PI_ENTERPRISE_POLICIES = ProgressItem('Enterprise policies', 'enterprise_policies')
+PI_ROLLOUT_STAGE_PLAN = ProgressItem('Rollout stage plan', 'rollout_stage_plan')
+PI_ENTERPRISE_POLICIES = ProgressItem(
+    'Enterprise policies', 'enterprise_policies'
+)  # noqa: E501
+
+
+PI_GROUP_METADATA: list[ProgressItem] = [
+    PI_FEATURE_NAME,
+    PI_SUMMARY,
+    PI_CATEGORY,
+    # PI_FEATURE_TYPE,  # Needed?
+    PI_OWNER_EMAILS,
+    PI_BLINK_COMPONENTS,
+    PI_WEB_FEATURE,
+    PI_SUMMARY_POLICY,
+    PI_TRACKING_BUG,
+]
+PI_GROUP_METADATA_DEP: list[ProgressItem] = [
+    PI_FEATURE_NAME_DEP,
+    PI_SUMMARY_DEP_TIMELINE,
+    PI_SUMMARY_DEP_ALTERNATIVES,
+    PI_SUMMARY_POLICY_DEP,
+    PI_CATEGORY,
+    # PI_FEATURE_TYPE,  # Needed?
+    PI_OWNER_EMAILS,
+    PI_BLINK_COMPONENTS,
+    PI_WEB_FEATURE,
+    PI_SUMMARY_POLICY,
+    PI_TRACKING_BUG,
+]
+PI_GROUP_STANDARDS_DEP: list[ProgressItem] = [
+    PI_SPEC_LINK,
+    PI_EXPLAINER,
+]
+PI_GROUP_STANDARDS_PSA: list[ProgressItem] = PI_GROUP_STANDARDS_DEP + [
+    PI_SPEC_MATURITY,
+]
+PI_GROUP_STANDARDS: list[ProgressItem] = PI_GROUP_STANDARDS_PSA + [
+    PI_TAG_REQUESTED,
+]
+PI_GROUP_DEVS: list[ProgressItem] = [
+    PI_FINCH_FEATURE_OR_JUSTIFY,
+]
+PI_GROUP_DEVS_DEP: list[ProgressItem] = [
+    PI_FINCH_FEATURE_OR_JUSTIFY,
+    PI_DEP_CONSOLE_WARNING,
+    PI_USECOUNTER_DEP,
+]
+PI_GROUP_MILESTONES: list[ProgressItem] = [
+    PI_DESKTOP_MILESTONE,
+    PI_ANDROID_MILESTONE,
+    PI_WEBVIEW_MILESTONE,
+]
+PI_GROUP_INTEROP: list[ProgressItem] = [
+    PI_FIREFOX_VIEWS,
+    PI_SAFARI_VIEWS,
+    PI_INTEROP_RISKS,
+    PI_WEB_DEV_VIEWS,
+]
+PI_GROUP_DOCS_PSA: list[ProgressItem] = [
+    PI_SAMPLES,
+]
+PI_GROUP_DOCS_DEP: list[ProgressItem] = [
+    PI_DOC_LINKS_OUTREACH,
+    PI_DOC_LINKS_AUTOMATION,
+]
+PI_GROUP_DOCS = PI_GROUP_DOCS_PSA + PI_GROUP_DOCS_DEP
+
+
+# Note: There are currently no DQ gates for the origin trial stage, instead
+# checklit criteria are incorporated into the API Owners OT gate.  However,
+# we might choose to add a DQ gate there in the future.
+
+DQ_CHECKLIST_BLINK_SHIP: list[ProgressItem] = (
+    PI_GROUP_METADATA
+    + PI_GROUP_STANDARDS
+    + PI_GROUP_DEVS
+    + PI_GROUP_MILESTONES
+    + PI_GROUP_INTEROP
+    + PI_GROUP_DOCS
+)
+DQ_CHECKLIST_FAST_SHIP: list[ProgressItem] = (
+    PI_GROUP_METADATA
+    + PI_GROUP_STANDARDS
+    + PI_GROUP_DEVS
+    + PI_GROUP_MILESTONES
+    + PI_GROUP_INTEROP
+    + PI_GROUP_DOCS
+)
+DQ_CHECKLIST_PSA_SHIP: list[ProgressItem] = (
+    PI_GROUP_METADATA
+    + PI_GROUP_STANDARDS_PSA
+    + PI_GROUP_MILESTONES
+    + PI_GROUP_INTEROP
+    + PI_GROUP_DOCS_PSA
+)
+
+DQ_CHECKLIST_DEP_PLAN: list[ProgressItem] = (
+    PI_GROUP_METADATA_DEP
+    + PI_GROUP_STANDARDS_DEP
+    + PI_GROUP_INTEROP
+    + PI_GROUP_DOCS_DEP
+)
+
+DQ_CHECKLIST_DEP_SHIP: list[ProgressItem] = (
+    PI_GROUP_METADATA_DEP
+    + PI_GROUP_STANDARDS_DEP
+    + PI_GROUP_DEVS_DEP
+    + PI_GROUP_MILESTONES
+    + PI_GROUP_INTEROP
+    + PI_GROUP_DOCS_DEP
+)
 
 
 # This is a stage that can be inserted in the stages of any non-enterprise
 # features that are marked as breaking changes.
 FEATURE_ROLLOUT_STAGE = ProcessStage(
-      'Rollout step',
-      '',
-      [PI_ROLLOUT_IMPACT,
-       PI_ROLLOUT_MILESTONE,
-       PI_ROLLOUT_PLATFORMS,
-       PI_ROLLOUT_DETAILS,
-       PI_ENTERPRISE_POLICIES,
-      ],
-      [],
-      [],
-      core_enums.INTENT_SHIP, core_enums.INTENT_ROLLOUT,
-      stage_type=core_enums.STAGE_ENT_ROLLOUT)
+    'Rollout step',
+    '',
+    [],
+    [],
+    stage_type=core_enums.STAGE_ENT_ROLLOUT,
+)
 
 
 BLINK_PROCESS_STAGES = [
-  ProcessStage(
-      'Start incubating',
-      'Create an initial WebStatus feature entry and kick off standards '
-      'incubation (WICG) to share ideas.',
-      [PI_INITIAL_PUBLIC_PROPOSAL,
-       PI_MOTIVATION,
-       PI_EXPLAINER,
-      ],
-      [],
-      [],
-      core_enums.INTENT_NONE, core_enums.INTENT_INCUBATE,
-      stage_type=core_enums.STAGE_BLINK_INCUBATE),
-
-  ProcessStage(
-      'Start prototyping',
-      'Share an explainer doc and API. '
-      'Start prototyping code in a public repo.',
-      [PI_SPEC_LINK,
-       PI_SPEC_MENTOR,
-       PI_DRAFT_API_SPEC,
-       PI_I2P_EMAIL,
-      ],
-      [Action('Draft Intent to Prototype email', INTENT_EMAIL_URL,
-              [PI_INITIAL_PUBLIC_PROPOSAL.name, PI_MOTIVATION.name,
-               PI_EXPLAINER.name])],
-      [approval_defs.PrototypeApproval],
-      core_enums.INTENT_INCUBATE, core_enums.INTENT_IMPLEMENT,
-      stage_type=core_enums.STAGE_BLINK_PROTOTYPE),
-
-  ProcessStage(
-      'Dev trials and iterate on design',
-      'Publicize availability for developers to try. '
-      'Provide sample code. '
-      'Request feedback from browser vendors.',
-      [PI_SAMPLES,
-       PI_DRAFT_API_OVERVIEW,
-       PI_REQUEST_SIGNALS,
-       PI_SEC_REVIEW,
-       PI_PRI_REVIEW,
-       PI_EXTERNAL_REVIEWS,
-       PI_R4DT_EMAIL,
-       PI_FINCH_FEATURE_OR_JUSTIFY,
-      ],
-      [Action('Draft Ready for Developer Testing email', INTENT_EMAIL_URL,
-              [PI_INITIAL_PUBLIC_PROPOSAL.name, PI_MOTIVATION.name,
-               PI_EXPLAINER.name, PI_SPEC_LINK.name])],
-      [],
-      core_enums.INTENT_IMPLEMENT, core_enums.INTENT_EXPERIMENT,
-      stage_type=core_enums.STAGE_BLINK_DEV_TRIAL),
-
-  ProcessStage(
-      'Evaluate readiness to ship',
-      'Work through a TAG review and gather vendor signals.',
-      [PI_TAG_REQUESTED,
-       PI_VENDOR_SIGNALS,
-       PI_WEB_DEV_SIGNALS,
-       PI_DOC_LINKS,
-       PI_DOC_SIGNOFF,
-       PI_EST_TARGET_MILESTONE,
-      ],
-      [],
-      [],
-      core_enums.INTENT_EXPERIMENT, core_enums.INTENT_IMPLEMENT_SHIP,
-      stage_type=core_enums.STAGE_BLINK_EVAL_READINESS),
-
-  ProcessStage(
-      'Origin Trial',
-      '(Optional) Set up and run an origin trial. '
-      'Act on feedback from partners and web developers.',
-      [PI_OT_REQUEST,
-       PI_OT_AVAILABLE,
-       PI_OT_RESULTS,
-       PI_I2E_EMAIL,
-       PI_I2E_LGTMS,
-      ],
-      [Action('Draft Intent to Experiment email', INTENT_EMAIL_URL,
-              [PI_INITIAL_PUBLIC_PROPOSAL.name, PI_MOTIVATION.name,
-               PI_EXPLAINER.name, PI_SPEC_LINK.name,
-               PI_EST_TARGET_MILESTONE.name])],
-      [approval_defs.ExperimentApproval],
-      core_enums.INTENT_IMPLEMENT_SHIP, core_enums.INTENT_EXTEND_TRIAL,
-      stage_type=core_enums.STAGE_BLINK_ORIGIN_TRIAL),
-
-  ProcessStage(
-      'Prepare to ship',
-      'Lock in shipping milestone. Finalize docs and announcements. '
-      'Further standardization.',
-      [PI_MIGRATE_INCUBATION,
-       PI_TAG_ADDRESSED,
-       PI_UPDATED_VENDOR_SIGNALS,
-       PI_UPDATED_TARGET_MILESTONE,
-       PI_I2S_EMAIL,
-       PI_I2S_LGTMS,
-      ],
-      [Action('Draft Intent to Ship email', INTENT_EMAIL_URL,
-              [PI_INITIAL_PUBLIC_PROPOSAL.name, PI_MOTIVATION.name,
-               PI_EXPLAINER.name, PI_SPEC_LINK.name,
-               PI_FINCH_FEATURE_OR_JUSTIFY.name,
-               PI_TAG_ADDRESSED.name, PI_UPDATED_VENDOR_SIGNALS.name,
-               PI_UPDATED_TARGET_MILESTONE.name])],
-      [approval_defs.ShipApproval],
-      core_enums.INTENT_IMPLEMENT_SHIP, core_enums.INTENT_SHIP,
-      stage_type=core_enums.STAGE_BLINK_SHIPPING),
-
-  ProcessStage(
-      'Ship',
-      'Update milestones and other information when the feature '
-      'actually ships.',
-      [PI_FINAL_VENDOR_SIGNALS,
-       PI_FINAL_TARGET_MILESTONE,
-      ],
-      [],
-      [],
-      core_enums.INTENT_SHIP, core_enums.INTENT_SHIPPED,
-      stage_type=None),
+    ProcessStage(
+        'Start incubating',
+        'Create an initial WebStatus feature entry and kick off standards '
+        'incubation (WICG) to share ideas.',
+        PI_GROUP_METADATA
+        + [
+            PI_MOTIVATION,
+            PI_INITIAL_PUBLIC_PROPOSAL,
+            PI_EXPLAINER,
+        ],
+        [],
+        stage_type=core_enums.STAGE_BLINK_INCUBATE,
+    ),
+    ProcessStage(
+        'Start prototyping',
+        'Share an explainer doc and API. '
+        'Start prototyping code in a public repo.',
+        [
+            PI_SPEC_LINK,
+            PI_SPEC_MATURITY,
+        ],
+        [
+            Action(
+                'Draft Intent to Prototype email',
+                INTENT_EMAIL_URL,
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_INITIAL_PUBLIC_PROPOSAL.name,
+                    PI_MOTIVATION.name,
+                    PI_EXPLAINER.name,
+                ],
+                [core_enums.GATE_API_PROTOTYPE],
+            )
+        ],
+        stage_type=core_enums.STAGE_BLINK_PROTOTYPE,
+    ),
+    ProcessStage(
+        'Dev trials and iterate on design',
+        'Publicize availability for developers to try. '
+        'Provide sample code. '
+        'Request feedback from browser vendors.',
+        [
+            PI_DOC_LINKS_OUTREACH,
+            PI_DOC_LINKS_AUTOMATION,
+            PI_SAMPLES,
+            PI_FIREFOX_VIEWS,
+            PI_SAFARI_VIEWS,
+            PI_INTEROP_RISKS,
+            PI_WEB_DEV_VIEWS,
+            PI_FINCH_FEATURE_OR_JUSTIFY,
+        ],
+        [
+            Action(
+                'Draft Ready for Developer Testing email',
+                INTENT_EMAIL_URL_NO_APPROVALS,  # noqa: E501
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_INITIAL_PUBLIC_PROPOSAL.name,
+                    PI_MOTIVATION.name,
+                    PI_EXPLAINER.name,
+                    PI_SPEC_LINK.name,
+                ],
+                [],
+            )
+        ],
+        stage_type=core_enums.STAGE_BLINK_DEV_TRIAL,
+    ),
+    ProcessStage(
+        'Evaluate readiness to ship',
+        'Work through a TAG review and gather vendor signals.',
+        [
+            PI_TAG_REQUESTED,
+        ],
+        [],
+        stage_type=core_enums.STAGE_BLINK_EVAL_READINESS,
+    ),
+    ProcessStage(
+        'Origin Trial',
+        '(Optional) Set up and run an origin trial. '
+        'Act on feedback from partners and web developers.',
+        [],
+        [
+            Action(
+                'Draft Intent to Experiment email',
+                INTENT_EMAIL_URL,
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_INITIAL_PUBLIC_PROPOSAL.name,
+                    PI_MOTIVATION.name,
+                    PI_EXPLAINER.name,
+                    PI_SPEC_LINK.name,
+                    PI_FIREFOX_VIEWS.name,
+                    PI_SAFARI_VIEWS.name,
+                    PI_INTEROP_RISKS.name,
+                    PI_WEB_DEV_VIEWS.name,
+                    PI_FINCH_FEATURE_OR_JUSTIFY.name,
+                ],
+                [core_enums.GATE_API_ORIGIN_TRIAL],
+            )
+        ],
+        stage_type=core_enums.STAGE_BLINK_ORIGIN_TRIAL,
+    ),
+    ProcessStage(
+        'Extend origin trial',
+        '(Optional) Extend an existing origin trial.',
+        [],
+        [
+            Action(
+                'Draft Intent to Extend Experiment email',
+                INTENT_EMAIL_URL,
+                [],
+                [core_enums.GATE_API_EXTEND_ORIGIN_TRIAL],
+            )
+        ],
+        stage_type=core_enums.STAGE_BLINK_EXTEND_ORIGIN_TRIAL,
+    ),
+    ProcessStage(
+        'Prepare to ship',
+        'Lock in shipping milestone. Finalize docs and announcements. '
+        'Further standardization.',
+        PI_GROUP_METADATA
+        + [
+            PI_TAG_ADDRESSED,
+            PI_DESKTOP_MILESTONE,
+            PI_ANDROID_MILESTONE,
+            PI_WEBVIEW_MILESTONE,
+        ],
+        [
+            Action(
+                'Review data quality',
+                REQUEST_REVIEW_ACTION_URL,
+                [pi.name for pi in DQ_CHECKLIST_BLINK_SHIP],
+                [core_enums.GATE_DQ_SHIP],
+            ),
+            Action(
+                'Draft Intent to Ship email',
+                INTENT_EMAIL_URL,
+                [
+                    PI_INITIAL_PUBLIC_PROPOSAL.name,
+                    PI_MOTIVATION.name,
+                    PI_EXPLAINER.name,
+                    PI_SPEC_LINK.name,
+                    PI_WEB_FEATURE.name,
+                    PI_TRACKING_BUG.name,
+                    PI_FINCH_FEATURE_OR_JUSTIFY.name,
+                    PI_FIREFOX_VIEWS.name,
+                    PI_SAFARI_VIEWS.name,
+                    PI_INTEROP_RISKS.name,
+                    PI_WEB_DEV_VIEWS.name,
+                    PI_TAG_ADDRESSED.name,
+                    PI_DESKTOP_MILESTONE.name,
+                ],
+                [core_enums.GATE_API_SHIP],
+            ),
+        ],
+        stage_type=core_enums.STAGE_BLINK_SHIPPING,
+    ),
+    ProcessStage(
+        'Ship',
+        'Update milestones and other information when the feature '
+        'actually ships.',
+        [],
+        [],
+        stage_type=None,
+    ),
     FEATURE_ROLLOUT_STAGE,
-  ]
+]
 
 
 BLINK_LAUNCH_PROCESS = Process(
     'New feature incubation',
     'Description of blink launch process',  # Not used yet.
     'When to use it',  # Not used yet.
-    BLINK_PROCESS_STAGES)
+    BLINK_PROCESS_STAGES,
+)
 
 
 BLINK_FAST_TRACK_STAGES = [
-  ProcessStage(
-      'Start prototyping',
-      'Write up use cases and scenarios, start coding as a '
-      'runtime enabled feature.',
-      [PI_SPEC_LINK,
-       PI_CODE_IN_CHROMIUM,
-       ],
-      [Action('Draft Intent to Prototype email', INTENT_EMAIL_URL,
-              [PI_SPEC_LINK.name])],
-      [approval_defs.PrototypeApproval],
-      core_enums.INTENT_NONE, core_enums.INTENT_IMPLEMENT,
-      stage_type=core_enums.STAGE_FAST_PROTOTYPE),
-
-  ProcessStage(
-      'Dev trials and iterate on implementation',
-      'Publicize availability for developers to try. '
-      'Provide sample code. '
-      'Act on feedback from partners and web developers.',
-      [PI_SAMPLES,
-       PI_DRAFT_API_OVERVIEW,
-       PI_R4DT_EMAIL,
-       PI_VENDOR_SIGNALS,
-       PI_EST_TARGET_MILESTONE,
-       PI_FINCH_FEATURE_OR_JUSTIFY,
-      ],
-      [Action('Draft Ready for Developer Testing email', INTENT_EMAIL_URL,
-              [PI_SPEC_LINK.name, PI_EST_TARGET_MILESTONE.name])],
-      [],
-      core_enums.INTENT_IMPLEMENT, core_enums.INTENT_EXPERIMENT,
-      stage_type=core_enums.STAGE_FAST_DEV_TRIAL),
-
-  ProcessStage(
-      'Origin Trial',
-      '(Optional) Set up and run an origin trial. '
-      'Act on feedback from partners and web developers.',
-      [PI_OT_REQUEST,
-       PI_OT_AVAILABLE,
-       PI_OT_RESULTS,
-       PI_I2E_EMAIL,
-       PI_I2E_LGTMS,
-      ],
-      [Action('Draft Intent to Experiment email', INTENT_EMAIL_URL,
-              [PI_SPEC_LINK.name, PI_EST_TARGET_MILESTONE.name])],
-      [approval_defs.ExperimentApproval],
-      core_enums.INTENT_EXPERIMENT, core_enums.INTENT_EXTEND_TRIAL,
-      stage_type=core_enums.STAGE_FAST_ORIGIN_TRIAL),
-
-  ProcessStage(
-      'Prepare to ship',
-      'Lock in shipping milestone. Finalize docs and announcements. '
-      'Further standardization.',
-      [PI_DOC_SIGNOFF,
-       PI_UPDATED_TARGET_MILESTONE,
-       PI_I2S_EMAIL,
-       PI_I2S_LGTMS,
-      ],
-      [Action('Draft Intent to Ship email', INTENT_EMAIL_URL,
-              [PI_SPEC_LINK.name,
-               PI_FINCH_FEATURE_OR_JUSTIFY.name,
-               PI_UPDATED_TARGET_MILESTONE.name])],
-      [approval_defs.ShipApproval],
-      core_enums.INTENT_EXPERIMENT, core_enums.INTENT_SHIP,
-      stage_type=core_enums.STAGE_FAST_SHIPPING),
-
-  ProcessStage(
-      'Ship',
-      'Update milestones and other information when the feature '
-      'actually ships.',
-      [PI_FINAL_VENDOR_SIGNALS,
-       PI_FINAL_TARGET_MILESTONE,
-      ],
-      [],
-      [],
-      core_enums.INTENT_SHIP, core_enums.INTENT_SHIPPED,
-      stage_type=None),
+    ProcessStage(
+        'Start prototyping',
+        'Write up use cases and scenarios, start coding as a '
+        'runtime enabled feature.',
+        PI_GROUP_METADATA
+        + [
+            PI_SPEC_LINK,
+            PI_EXPLAINER,
+            PI_SPEC_MATURITY,
+            PI_TAG_REQUESTED,
+        ],
+        [
+            Action(
+                'Draft Intent to Prototype email',
+                INTENT_EMAIL_URL,
+                [PI_SPEC_LINK.name],
+                [core_enums.GATE_API_PROTOTYPE],
+            )
+        ],
+        stage_type=core_enums.STAGE_FAST_PROTOTYPE,
+    ),
+    ProcessStage(
+        'Dev trials and iterate on implementation',
+        'Publicize availability for developers to try. '
+        'Provide sample code. '
+        'Act on feedback from partners and web developers.',
+        [
+            PI_DOC_LINKS_OUTREACH,
+            PI_DOC_LINKS_AUTOMATION,
+            PI_SAMPLES,
+            PI_FINCH_FEATURE_OR_JUSTIFY,
+            PI_FIREFOX_VIEWS,
+            PI_SAFARI_VIEWS,
+            PI_INTEROP_RISKS,
+            PI_WEB_DEV_VIEWS,
+        ],
+        [
+            Action(
+                'Draft Ready for Developer Testing email',
+                INTENT_EMAIL_URL_NO_APPROVALS,  # noqa: E501
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_SPEC_LINK.name,
+                ],
+                [],
+            )
+        ],
+        stage_type=core_enums.STAGE_FAST_DEV_TRIAL,
+    ),
+    ProcessStage(
+        'Origin Trial',
+        '(Optional) Set up and run an origin trial. '
+        'Act on feedback from partners and web developers.',
+        [],
+        [
+            Action(
+                'Draft Intent to Experiment email',
+                INTENT_EMAIL_URL,
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_SPEC_LINK.name,
+                    PI_FIREFOX_VIEWS.name,
+                    PI_SAFARI_VIEWS.name,
+                    PI_INTEROP_RISKS.name,
+                    PI_WEB_DEV_VIEWS.name,
+                    PI_FINCH_FEATURE_OR_JUSTIFY.name,
+                ],
+                [core_enums.GATE_API_ORIGIN_TRIAL],
+            )
+        ],
+        stage_type=core_enums.STAGE_FAST_ORIGIN_TRIAL,
+    ),
+    ProcessStage(
+        'Extend origin trial',
+        '(Optional) Extend an existing origin trial.',
+        [],
+        [
+            Action(
+                'Draft Intent to Extend Experiment email',
+                INTENT_EMAIL_URL,
+                [],
+                [core_enums.GATE_API_EXTEND_ORIGIN_TRIAL],
+            )
+        ],
+        stage_type=core_enums.STAGE_FAST_EXTEND_ORIGIN_TRIAL,
+    ),
+    ProcessStage(
+        'Prepare to ship',
+        'Lock in shipping milestone. Finalize docs and announcements. '
+        'Further standardization.',
+        PI_GROUP_METADATA
+        + [
+            PI_DESKTOP_MILESTONE,
+            PI_ANDROID_MILESTONE,
+            PI_WEBVIEW_MILESTONE,
+        ],
+        [
+            Action(
+                'Review data quality',
+                REQUEST_REVIEW_ACTION_URL,
+                [pi.name for pi in DQ_CHECKLIST_FAST_SHIP],
+                [core_enums.GATE_DQ_SHIP],
+            ),
+            Action(
+                'Draft Intent to Ship email',
+                INTENT_EMAIL_URL,
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_SPEC_LINK.name,
+                    PI_WEB_FEATURE.name,
+                    PI_FINCH_FEATURE_OR_JUSTIFY.name,
+                    PI_DESKTOP_MILESTONE.name,
+                ],
+                [core_enums.GATE_API_SHIP],
+            ),
+        ],
+        stage_type=core_enums.STAGE_FAST_SHIPPING,
+    ),
+    ProcessStage(
+        'Ship',
+        'Update milestones and other information when the feature '
+        'actually ships.',
+        [],
+        [],
+        stage_type=None,
+    ),
     FEATURE_ROLLOUT_STAGE,
-  ]
+]
 
 
 BLINK_FAST_TRACK_PROCESS = Process(
     'Existing feature implementation',
     'Description of blink fast track process',  # Not used yet.
     'When to use it',  # Not used yet.
-    BLINK_FAST_TRACK_STAGES)
+    BLINK_FAST_TRACK_STAGES,
+)
 
 
 PSA_ONLY_STAGES = [
-  ProcessStage(
-      'Implement',
-      'Check code into Chromium under a flag.',
-      [PI_SPEC_LINK,
-       PI_CODE_IN_CHROMIUM,
-      ],
-      [],
-      [],
-      core_enums.INTENT_NONE, core_enums.INTENT_IMPLEMENT,
-      stage_type=core_enums.STAGE_PSA_IMPLEMENT),
-
-  ProcessStage(
-      'Dev trials and iterate on implementation',
-      '(Optional) Publicize availability for developers to try. '
-      'Act on feedback from partners and web developers.',
-      [PI_R4DT_EMAIL,
-       PI_VENDOR_SIGNALS,
-       PI_EST_TARGET_MILESTONE,
-       PI_FINCH_FEATURE_OR_JUSTIFY,
-      ],
-      [Action('Draft Ready for Developer Testing email', INTENT_EMAIL_URL,
-              [PI_SPEC_LINK.name, PI_EST_TARGET_MILESTONE.name])],
-      [],
-      core_enums.INTENT_IMPLEMENT, core_enums.INTENT_EXPERIMENT,
-      stage_type=core_enums.STAGE_PSA_DEV_TRIAL),
-
-  ProcessStage(
-      'Prepare to ship',
-      'Lock in shipping milestone.',
-      [PI_PSA_EMAIL,
-       PI_UPDATED_TARGET_MILESTONE,
-       PI_I2S_EMAIL,
-      ],
-      [Action('Draft Web-Facing Change PSA email', INTENT_EMAIL_URL,
-              [PI_SPEC_LINK.name,
-               PI_FINCH_FEATURE_OR_JUSTIFY.name,
-               PI_UPDATED_TARGET_MILESTONE.name])],
-      [approval_defs.ShipApproval],
-      core_enums.INTENT_EXPERIMENT, core_enums.INTENT_SHIP,
-      stage_type=core_enums.STAGE_PSA_SHIPPING),
-
-  ProcessStage(
-      'Ship',
-      'Update milestones and other information when the feature '
-      'actually ships.',
-      [PI_FINAL_VENDOR_SIGNALS,
-       PI_FINAL_TARGET_MILESTONE,
-      ],
-      [],
-      [],
-      core_enums.INTENT_SHIP, core_enums.INTENT_SHIPPED,
-      stage_type=None),
+    ProcessStage(
+        'Implement',
+        'Check code into Chromium under a flag.',
+        PI_GROUP_METADATA
+        + [
+            PI_SPEC_LINK,
+            PI_EXPLAINER,
+            PI_SPEC_MATURITY,
+        ],
+        [],
+        stage_type=core_enums.STAGE_PSA_IMPLEMENT,
+    ),
+    ProcessStage(
+        'Dev trials and iterate on implementation',
+        '(Optional) Publicize availability for developers to try. '
+        'Act on feedback from partners and web developers.',
+        [
+            PI_FINCH_FEATURE_OR_JUSTIFY,
+            PI_FIREFOX_VIEWS,
+            PI_SAFARI_VIEWS,
+            PI_INTEROP_RISKS,
+            PI_WEB_DEV_VIEWS,
+            PI_SAMPLES,
+        ],
+        [
+            Action(
+                'Draft Ready for Developer Testing email',
+                INTENT_EMAIL_URL_NO_APPROVALS,  # noqa: E501
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_SPEC_LINK.name,
+                ],
+                [],
+            )
+        ],
+        stage_type=core_enums.STAGE_PSA_DEV_TRIAL,
+    ),
+    ProcessStage(
+        'Prepare to ship',
+        'Lock in shipping milestone.',
+        PI_GROUP_METADATA
+        + [
+            PI_DESKTOP_MILESTONE,
+            PI_ANDROID_MILESTONE,
+            PI_WEBVIEW_MILESTONE,
+        ],
+        [
+            Action(
+                'Review data quality',
+                REQUEST_REVIEW_ACTION_URL,
+                [pi.name for pi in DQ_CHECKLIST_PSA_SHIP],
+                [core_enums.GATE_DQ_SHIP],
+            ),
+            Action(
+                'Draft Web-Facing Change PSA email',
+                INTENT_EMAIL_URL_NO_APPROVALS,  # noqa: E501
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_SPEC_LINK.name,
+                    PI_FINCH_FEATURE_OR_JUSTIFY.name,
+                    PI_DESKTOP_MILESTONE.name,
+                ],
+                [],
+            ),
+        ],
+        stage_type=core_enums.STAGE_PSA_SHIPPING,
+    ),
+    ProcessStage(
+        'Ship',
+        'Update milestones and other information when the feature '
+        'actually ships.',
+        [],
+        [],
+        stage_type=None,
+    ),
     FEATURE_ROLLOUT_STAGE,
-  ]
+]
 
 
 PSA_ONLY_PROCESS = Process(
     'Web developer facing change to existing code',
-    'Description of PSA process',   # Not used yet.
+    'Description of PSA process',  # Not used yet.
     'When to use it',  # Not used yet.
-    PSA_ONLY_STAGES)
+    PSA_ONLY_STAGES,
+)
 
 
 DEPRECATION_STAGES = [
-  ProcessStage(
-      'Write up motivation',
-      'Create an initial WebStatus feature entry to deprecate '
-      'an existing feature, including motivation and impact. '
-      'Then, move existing Chromium code under a flag.',
-      [PI_EXISTING_FEATURE,
-       PI_MOTIVATION,
-      ],
-      [Action('Draft Intent to Deprecate and Remove email', INTENT_EMAIL_URL,
-              [PI_MOTIVATION.name])],
-      [approval_defs.PrototypeApproval],
-      core_enums.INTENT_NONE, core_enums.INTENT_IMPLEMENT,
-      stage_type=core_enums.STAGE_DEP_PLAN),
-
-  # TODO(cwilso): Work out additional steps for flag defaulting to disabled.
-  ProcessStage(
-      'Dev trial of deprecation',
-      'Publicize deprecation and address risks. ',
-      [PI_R4DT_EMAIL,
-       PI_VENDOR_SIGNALS,
-       PI_EST_TARGET_MILESTONE,
-       PI_FINCH_FEATURE_OR_JUSTIFY,
-      ],
-      [Action('Draft Ready for Developer Testing email', INTENT_EMAIL_URL,
-              [PI_MOTIVATION.name, PI_VENDOR_SIGNALS.name,
-               PI_EST_TARGET_MILESTONE.name])],
-      [],
-      core_enums.INTENT_IMPLEMENT, core_enums.INTENT_EXPERIMENT,
-      stage_type=core_enums.STAGE_DEP_DEV_TRIAL),
-
-  ProcessStage(
-      'Prepare for Deprecation Trial',
-      '(Optional) Set up and run a deprecation trial. ',
-      [PI_DT_REQUEST,
-       PI_DT_AVAILABLE,
-       PI_REMOVAL_OF_DT,
-       PI_DT_EMAIL,
-       PI_DT_LGTMS,
-      ],
-      [Action('Draft Request for Deprecation Trial email', INTENT_EMAIL_URL,
-              [PI_MOTIVATION.name, PI_VENDOR_SIGNALS.name,
-               PI_EST_TARGET_MILESTONE.name])],
-      # TODO(jrobbins): Intent to extend deprecation.
-      [approval_defs.ExperimentApproval],
-      core_enums.INTENT_EXPERIMENT, core_enums.INTENT_EXTEND_TRIAL,
-      stage_type=core_enums.STAGE_DEP_DEPRECATION_TRIAL),
-
-  ProcessStage(
-      'Prepare to ship',
-      'Lock in shipping milestone. '
-      'Finalize docs and announcements before disabling feature by default.',
-      [PI_UPDATED_TARGET_MILESTONE,
-       PI_I2S_EMAIL,
-       PI_I2S_LGTMS,
-      ],
-      [Action('Draft Intent to Ship email', INTENT_EMAIL_URL,
-              [PI_MOTIVATION.name,
-               PI_FINCH_FEATURE_OR_JUSTIFY.name, PI_VENDOR_SIGNALS.name,
-               PI_UPDATED_TARGET_MILESTONE.name])],
-      [approval_defs.ShipApproval],
-      core_enums.INTENT_EXPERIMENT, core_enums.INTENT_SHIP,
-      stage_type=core_enums.STAGE_DEP_SHIPPING),
-
-  ProcessStage(
-      'Remove code',
-      'Once the feature is no longer available, remove the code.',
-      [PI_CODE_REMOVED,
-      ],
-      [Action('Generate an Intent to Extend Deprecation Trial',
-              INTENT_EMAIL_URL,
-              [PI_MOTIVATION.name, PI_VENDOR_SIGNALS.name,
-               PI_UPDATED_TARGET_MILESTONE.name]),
-       ],
-      [],
-      core_enums.INTENT_SHIP, core_enums.INTENT_REMOVED,
-      stage_type=core_enums.STAGE_DEP_REMOVE_CODE),
+    ProcessStage(
+        'Write up deprecation plan',
+        'Create an initial WebStatus feature entry to deprecate '
+        'an existing feature, including motivation and impact. '
+        'Then, get approval for your deprecation plans.',
+        PI_GROUP_METADATA_DEP
+        + [
+            PI_DOC_LINKS_OUTREACH,
+            PI_DOC_LINKS_AUTOMATION,
+            PI_MOTIVATION,
+            PI_SPEC_LINK,
+            PI_EXPLAINER,
+            PI_FIREFOX_VIEWS,
+            PI_SAFARI_VIEWS,
+            PI_INTEROP_RISKS,
+            PI_WEB_DEV_VIEWS,
+        ],
+        [
+            Action(
+                'Review data quality',
+                REQUEST_REVIEW_ACTION_URL,
+                [pi.name for pi in DQ_CHECKLIST_DEP_PLAN],
+                [core_enums.GATE_DQ_PLAN],
+            ),
+            Action(
+                'Draft Intent to Deprecate and Remove email',
+                INTENT_EMAIL_URL,
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_MOTIVATION.name,
+                    PI_TRACKING_BUG.name,
+                ],
+                [core_enums.GATE_API_PLAN],
+            ),
+        ],
+        stage_type=core_enums.STAGE_DEP_PLAN,
+    ),
+    # TODO(cwilso): Work out additional steps for flag defaulting to disabled.
+    ProcessStage(
+        'Dev trial of deprecation',
+        'Publicize deprecation and address risks. ',
+        PI_GROUP_DEVS_DEP,
+        [
+            Action(
+                'Draft Ready for Developer Testing email',
+                INTENT_EMAIL_URL_NO_APPROVALS,  # noqa: E501
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_MOTIVATION.name,
+                    PI_FIREFOX_VIEWS.name,
+                    PI_SAFARI_VIEWS.name,
+                    PI_INTEROP_RISKS.name,
+                    PI_WEB_DEV_VIEWS.name,
+                ],
+                [],
+            )
+        ],
+        stage_type=core_enums.STAGE_DEP_DEV_TRIAL,
+    ),
+    ProcessStage(
+        'Prepare for Deprecation Trial',
+        '(Optional) Set up and run a deprecation trial. ',
+        [],
+        [
+            Action(
+                'Draft Request for Deprecation Trial email',
+                INTENT_EMAIL_URL,
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_MOTIVATION.name,
+                    PI_FIREFOX_VIEWS.name,
+                    PI_SAFARI_VIEWS.name,
+                    PI_INTEROP_RISKS.name,
+                    PI_WEB_DEV_VIEWS.name,
+                ],
+                [core_enums.GATE_API_ORIGIN_TRIAL],
+            )
+        ],
+        stage_type=core_enums.STAGE_DEP_DEPRECATION_TRIAL,
+    ),
+    ProcessStage(
+        'Extend deprecation trial',
+        '(Optional) Extend an existing deprecation trial.',
+        [],
+        [
+            Action(
+                'Draft Intent to Extend Deprecation Trial email',
+                INTENT_EMAIL_URL,
+                [],
+                [core_enums.GATE_API_EXTEND_ORIGIN_TRIAL],
+            )
+        ],
+        stage_type=core_enums.STAGE_DEP_EXTEND_DEPRECATION_TRIAL,
+    ),
+    ProcessStage(
+        'Prepare to ship',
+        'Lock in shipping milestone. '
+        'Finalize docs and announcements before disabling feature by default. '
+        'If there were changes since your plan approvals, get approvals again.',
+        PI_GROUP_MILESTONES,
+        [
+            # There is no I2S for deprecations because it all happens during planning.
+            # And thre is no API Owner gate on this stage.
+            Action(
+                'Review data quality',
+                REQUEST_REVIEW_ACTION_URL,
+                [pi.name for pi in DQ_CHECKLIST_DEP_SHIP],
+                [core_enums.GATE_DQ_SHIP],
+            ),
+        ],
+        stage_type=core_enums.STAGE_DEP_SHIPPING,
+    ),
+    ProcessStage(
+        'Remove code',
+        'Once the feature is no longer available, remove the code.',
+        [
+            PI_CODE_REMOVED,
+        ],
+        [
+            Action(
+                'Generate an Intent to Extend Deprecation Trial',
+                INTENT_EMAIL_URL,
+                [
+                    PI_TRACKING_BUG.name,
+                    PI_MOTIVATION.name,
+                    PI_FIREFOX_VIEWS.name,
+                    PI_SAFARI_VIEWS.name,
+                    PI_INTEROP_RISKS.name,
+                    PI_WEB_DEV_VIEWS.name,
+                    PI_DESKTOP_MILESTONE.name,
+                ],
+                [],
+            ),
+        ],
+        stage_type=core_enums.STAGE_DEP_REMOVE_CODE,
+    ),
     FEATURE_ROLLOUT_STAGE,
-  ]
+]
 
 # Thise are the stages for a feature that has the enterprise feature type.
 ENTERPRISE_STAGES = [
-  ProcessStage(
-      'Rollout step',
-      '',
-      [PI_ROLLOUT_IMPACT,
-       PI_ROLLOUT_MILESTONE,
-       PI_ROLLOUT_PLATFORMS,
-       PI_ROLLOUT_DETAILS,
-       PI_ENTERPRISE_POLICIES,
-      ],
-      [],
-      [],
-      core_enums.INTENT_NONE, core_enums.INTENT_ROLLOUT,
-      stage_type=core_enums.STAGE_ENT_ROLLOUT),
+    ProcessStage(
+        'Rollout step',
+        '',
+        [],
+        [],
+        stage_type=core_enums.STAGE_ENT_ROLLOUT,
+    ),
 ]
 
 
@@ -564,14 +1119,16 @@ DEPRECATION_PROCESS = Process(
     'Feature deprecation',
     'Description of deprecation process',  # Not used yet.
     'When to use it',  # Not used yet.
-    DEPRECATION_STAGES)
+    DEPRECATION_STAGES,
+)
 
 
 ENTERPRISE_PROCESS = Process(
     'New Feature or removal affecting enterprises',
     'Description of enterprise process',  # Not used yet.
     'When to use it',  # Not used yet.
-    ENTERPRISE_STAGES)
+    ENTERPRISE_STAGES,
+)
 
 
 ALL_PROCESSES = {
@@ -580,161 +1137,46 @@ ALL_PROCESSES = {
     core_enums.FEATURE_TYPE_CODE_CHANGE_ID: PSA_ONLY_PROCESS,
     core_enums.FEATURE_TYPE_DEPRECATION_ID: DEPRECATION_PROCESS,
     core_enums.FEATURE_TYPE_ENTERPRISE_ID: ENTERPRISE_PROCESS,
-    }
-
-
-INTENT_EMAIL_SECTIONS = {
-    core_enums.INTENT_NONE: [],
-    core_enums.INTENT_INCUBATE: [],
-    core_enums.INTENT_IMPLEMENT: ['motivation'],
-    core_enums.INTENT_EXPERIMENT: ['i2p_thread', 'experiment'],
-    core_enums.INTENT_IMPLEMENT_SHIP: [
-        'need_api_owners_lgtms', 'motivation', 'tracking_bug', 'sample_links'],
-    core_enums.INTENT_EXTEND_TRIAL: [
-        'i2p_thread', 'experiment', 'extension_reason'],
-    core_enums.INTENT_SHIP: [
-        'need_api_owners_lgtms', 'i2p_thread', 'tracking_bug', 'sample_links',
-        'anticipated_spec_changes', 'ship'],
-    core_enums.INTENT_REMOVED: [],
-    core_enums.INTENT_SHIPPED: [],
-    core_enums.INTENT_PARKED: [],
-    }
+}
 
 
 def initial_tag_review_status(feature_type):
-  """Incubating a new feature requires a TAG review, other types do not."""
-  if feature_type == core_enums.FEATURE_TYPE_INCUBATE_ID:
-    return core_enums.REVIEW_PENDING
-  return core_enums.REVIEW_NA
+    """Incubating a new feature requires a TAG review, other types do not."""
+    if feature_type == core_enums.FEATURE_TYPE_INCUBATE_ID:
+        return core_enums.REVIEW_PENDING
+    return core_enums.REVIEW_NA
 
 
-def review_is_done(status):
-  return status in (core_enums.REVIEW_ISSUES_ADDRESSED, core_enums.REVIEW_NA)
+def write_gates_and_stages_for_feature(
+    feature_id: int, feature_type: int
+) -> None:
+    """Write each Stage and Gate entity for the given feature."""
+    # Obtain a list of stages and gates for the given feature type.
+    stages_gates = core_enums.STAGES_AND_GATES_BY_FEATURE_TYPE[feature_type]
 
+    for stage_type, gate_types in stages_gates:
+        # Don't create a trial extension stage pre-emptively.
+        if (
+            stage_type
+            == core_enums.STAGE_TYPES_EXTEND_ORIGIN_TRIAL[feature_type]
+        ):
+            continue
 
-# These functions return a true value when the checkmark should be shown.
-# If they return a string, and it starts with "http:" or "https:", it will
-# be used as a link URL.
-PROGRESS_DETECTORS = {
-    'Initial public proposal':
-    lambda f, _: f.initial_public_proposal_url,
+        # Don't create DQ gates on prod until we are ready to launch that.
+        if settings.PROD and stage_type in [
+            core_enums.GATE_DQ_PLAN,
+            core_enums.GATE_DQ_SHIP,
+        ]:
+            continue
 
-    'Explainer':
-    lambda f, _: f.explainer_links and f.explainer_links[0],
-
-    'Security review issues addressed':
-    lambda f, _: review_is_done(f.security_review_status),
-
-    'Privacy review issues addressed':
-    lambda f, _: review_is_done(f.privacy_review_status),
-
-    'Intent to Prototype email':
-    lambda f, stages: (
-        core_enums.STAGE_TYPES_PROTOTYPE[f.feature_type] and
-        stages[core_enums.STAGE_TYPES_PROTOTYPE[f.feature_type]][0].intent_thread_url),
-
-    'Intent to Ship email':
-    lambda f, stages: (core_enums.STAGE_TYPES_SHIPPING[f.feature_type] and
-        stages[core_enums.STAGE_TYPES_SHIPPING[f.feature_type]][0].intent_thread_url),
-
-    'Ready for Developer Testing email':
-    lambda f, stages: (core_enums.STAGE_TYPES_DEV_TRIAL[f.feature_type] and
-        stages[core_enums.STAGE_TYPES_DEV_TRIAL[f.feature_type]][0].announcement_url),
-
-    'Intent to Experiment email':
-    lambda f, stages: (core_enums.STAGE_TYPES_ORIGIN_TRIAL[f.feature_type] and
-        stages[core_enums.STAGE_TYPES_ORIGIN_TRIAL[f.feature_type]][0].intent_thread_url),
-
-    'Samples':
-    lambda f, _: f.sample_links and f.sample_links[0],
-
-    'Doc links':
-    lambda f, _: f.doc_links and f.doc_links[0],
-
-    'Spec link':
-    lambda f, _: f.spec_link,
-
-    'Draft API spec':
-    lambda f, _: f.spec_link,
-
-    'API spec':
-    lambda f, _: f.api_spec,
-
-    'Spec mentor':
-    lambda f, _: f.spec_mentor_emails,
-
-    'TAG review requested':
-    lambda f, _: f.tag_review,
-
-    'TAG review issues addressed':
-    lambda f, _: review_is_done(f.tag_review_status),
-
-    'Web developer signals':
-    lambda f, _: bool(f.web_dev_views and
-        f.web_dev_views != core_enums.DEV_NO_SIGNALS),
-
-    'Vendor signals':
-    lambda f, _: bool(
-        f.ff_views != core_enums.NO_PUBLIC_SIGNALS or
-        f.safari_views != core_enums.NO_PUBLIC_SIGNALS),
-
-    'Updated vendor signals':
-    lambda f, _: bool(
-        f.ff_views != core_enums.NO_PUBLIC_SIGNALS or
-        f.safari_views != core_enums.NO_PUBLIC_SIGNALS),
-
-    'Final vendor signals':
-    lambda f, _: bool(
-        f.ff_views != core_enums.NO_PUBLIC_SIGNALS or
-        f.safari_views != core_enums.NO_PUBLIC_SIGNALS),
-
-    'Estimated target milestone':
-    lambda f, stages: bool(core_enums.STAGE_TYPES_SHIPPING[f.feature_type] and
-        stages[core_enums.STAGE_TYPES_SHIPPING[f.feature_type]][0].milestones and
-        stages[core_enums.STAGE_TYPES_SHIPPING[f.feature_type]][0].milestones.desktop_first),
-
-    'Updated target milestone':
-    lambda f, stages: bool(core_enums.STAGE_TYPES_SHIPPING[f.feature_type] and
-        stages[core_enums.STAGE_TYPES_SHIPPING[f.feature_type]][0].milestones and
-        stages[core_enums.STAGE_TYPES_SHIPPING[f.feature_type]][0].milestones.desktop_first),
-
-    'Final target milestone':
-    lambda f, stages: bool(core_enums.STAGE_TYPES_SHIPPING[f.feature_type] and
-        stages[core_enums.STAGE_TYPES_SHIPPING[f.feature_type]][0].milestones and
-        stages[core_enums.STAGE_TYPES_SHIPPING[f.feature_type]][0].milestones.desktop_first),
-
-    'Finch feature name or non-finch justification':
-    lambda f, stages: bool(f.finch_name or f.non_finch_justification),
-
-    'Code in Chromium':
-    lambda f, _: f.impl_status_chrome in (
-        core_enums.IN_DEVELOPMENT, core_enums.BEHIND_A_FLAG,
-        core_enums.ENABLED_BY_DEFAULT,
-        core_enums.ORIGIN_TRIAL, core_enums.INTERVENTION),
-
-    'Motivation':
-    lambda f, _: bool(f.motivation),
-
-    'Code removed':
-    lambda f, _: f.impl_status_chrome == core_enums.REMOVED,
-
-    'Rollout impact':
-    lambda f, stages: stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]] and
-        stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]][0].rollout_impact,
-
-    'Rollout milestone':
-    lambda f, stages: stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]] and
-        stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]][0].rollout_milestone,
-
-    'Rollout platforms':
-    lambda f, stages: stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]] and
-        stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]][0].rollout_platforms,
-
-    'Rollout details':
-    lambda f, stages: stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]] and
-        stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]][0].rollout_details,
-
-    'Enterprise policies':
-    lambda f, stages: stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]] and
-        stages[core_enums.STAGE_TYPES_ROLLOUT[f.feature_type]][0].enterprise_policies,
-}
+        stage = Stage(feature_id=feature_id, stage_type=stage_type)
+        stage.put()
+        # Stages can have zero or more gates.
+        for gate_type in gate_types:
+            gate = Gate(
+                feature_id=feature_id,
+                stage_id=stage.key.integer_id(),
+                gate_type=gate_type,
+                state=Gate.PREPARING,
+            )
+            gate.put()

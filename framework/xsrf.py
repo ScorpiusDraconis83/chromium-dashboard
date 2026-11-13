@@ -14,19 +14,19 @@
 # limitations under the License.
 
 
+"""Cross-Site Request Forgery (XSRF) protection.
 
+Provides functions to generate and validate time-limited, user-specific
+XSRF tokens to secure form submissions and API requests.
+"""
 
 import base64
-import hmac
-import logging
-import random
-import string
-import time
+import functools
 import hashlib
+import hmac
+import time
 
-from framework import constants
-from framework import secrets
-
+from framework import constants, secrets
 
 # TODO(jrobbins): 2 hours is too short for usability, but a longer value
 # is not secure enough.  So, we will go with 2 hours and also implement
@@ -52,88 +52,109 @@ CLOCK_SKEW_SEC = 5
 
 DELIMITER = ':'.encode()
 
+# Validating the token content takes a surprisingly long 50ms.
+# And, that computation is not dependent on any other inputs,
+# so we can use a LRU cache on the function.
+TOKEN_TIME_CACHE_MAX_SIZE = 1000
+
 
 def generate_token(user_email, token_time=None):
-  """Return a security token specifically for the given user.
-  Args:
-    user_email: email addr of the user viewing an HTML form.  This can
-        be None for anon vistors.
-    token_time: Time at which the token is generated in seconds since the epoch.
-  Returns:
-    A url-safe security token.  The token is a string with the digest
-    the email and time, followed by plain-text copy of the time that is
-    used in validation.
-  Raises:
-    ValueError: if the XSRF secret was not configured.
-  """
-  token_time = token_time or int(time.time())
-  token_time = str(token_time).encode()
-  digester = hmac.new(secrets.get_xsrf_secret().encode(),
-                      digestmod=hashlib.sha256)
-  digester.update(user_email.encode() if user_email else b'')
-  digester.update(DELIMITER)
-  digester.update(token_time)
-  digest = digester.digest()
-  binary_token = base64.urlsafe_b64encode(digest+ DELIMITER + token_time)
-  token = binary_token.decode()
-  return token
+    """Return a security token specifically for the given user.
+
+    Args:
+      user_email: email addr of the user viewing an HTML form.  This can
+          be None for anon vistors.
+      token_time: Time at which the token is generated in seconds since the epoch.
+
+    Returns:
+      A url-safe security token.  The token is a string with the digest
+      the email and time, followed by plain-text copy of the time that is
+      used in validation.
+
+    Raises:
+      ValueError: if the XSRF secret was not configured.
+    """
+    token_time = token_time or int(time.time())
+    token_time = str(token_time).encode()
+    # codeql[py/weak-sensitive-data-hashing] XSRF tokens are not passwords.
+    digester = hmac.new(
+        secrets.get_xsrf_secret().encode(), digestmod=hashlib.sha256
+    )
+    digester.update(user_email.encode() if user_email else b'')
+    digester.update(DELIMITER)
+    digester.update(token_time)
+    digest = digester.digest()
+    binary_token = base64.urlsafe_b64encode(digest + DELIMITER + token_time)
+    token = binary_token.decode()
+    return token
 
 
-def validate_token(
-    token, user_email, timeout=TOKEN_TIMEOUT_SEC):
-  """Return True if the given token is valid for the given scope.
-  Args:
-    token: String token that was presented by the user.
-    user_email: user email addr.
-    timeout: int max token age in seconds.
-  Raises:
-    TokenIncorrect: if the token is missing or invalid.
-  """
-  if not token:
-    raise TokenIncorrect('missing token')
-  try:
-    decoded = base64.urlsafe_b64decode(token)
-    token_time = int(decoded.split(DELIMITER)[-1])
-  except (TypeError, ValueError):
-    raise TokenIncorrect('could not decode token')
-  now = int(time.time())
+@functools.lru_cache(maxsize=TOKEN_TIME_CACHE_MAX_SIZE)
+def _validate_and_get_token_time(token, user_email):
+    """If token content is valid, return token_time.  Otherwise, raise."""
+    if not token:
+        raise TokenIncorrect('missing token')
+    try:
+        decoded = base64.urlsafe_b64decode(token)
+        token_time = int(decoded.split(DELIMITER)[-1])
+    except (TypeError, ValueError):
+        raise TokenIncorrect('could not decode token')
 
-  # The given token should match the generated one with the same time.
-  expected_token = generate_token(user_email, token_time=token_time)
-  if len(token) != len(expected_token):
-    raise TokenIncorrect('presented token is wrong size')
+    # The given token should match the generated one with the same time.
+    expected_token = generate_token(user_email, token_time=token_time)
+    if len(token) != len(expected_token):
+        raise TokenIncorrect('presented token is wrong size')
 
-  # Perform constant time comparison to avoid timing attacks
-  different = 0
-  for res in zip(str(token), str(expected_token)):
-    different |= ord(res[0]) ^ ord(res[1])
-  if different:
-    raise TokenIncorrect(
-        'presented token does not match expected token: %r != %r' % (
-            token, expected_token))
+    # Perform constant time comparison to avoid timing attacks
+    different = 0
+    for res in zip(str(token), str(expected_token)):
+        different |= ord(res[0]) ^ ord(res[1])
+    if different:
+        raise TokenIncorrect(
+            'presented token does not match expected token: %r != %r'
+            % (token, expected_token)
+        )
 
-  # We reject tokens from the future.
-  if token_time > now + CLOCK_SKEW_SEC:
-    raise TokenIncorrect('token is from future')
+    return token_time
 
-  # We check expiration last so that we only raise the expriration error
-  # if the token would have otherwise been valid.
-  if now - token_time > timeout:
-    raise TokenIncorrect('token has expired')
+
+def validate_token(token, user_email, timeout=TOKEN_TIMEOUT_SEC):
+    """Return True if the given token is valid for the given scope.
+
+    Args:
+      token: String token that was presented by the user.
+      user_email: user email addr.
+      timeout: int max token age in seconds.
+
+    Raises:
+      TokenIncorrect: if the token is missing or invalid.
+    """
+    token_time = _validate_and_get_token_time(token, user_email)
+    now = int(time.time())
+    # We reject tokens from the future.
+    if token_time > now + CLOCK_SKEW_SEC:
+        raise TokenIncorrect('token is from future')
+
+    # We check expiration last so that we only raise the expriration error
+    # if the token would have otherwise been valid.
+    if now - token_time > timeout:
+        raise TokenIncorrect('token has expired')
 
 
 def token_expires_sec():
-  """Return timestamp when current tokens will expire, minus a safety margin."""
-  now = int(time.time())
-  return now + TOKEN_TIMEOUT_SEC - TOKEN_TIMEOUT_MARGIN_SEC
+    """Return timestamp when current tokens will expire, minus a safety margin."""
+    now = int(time.time())
+    return now + TOKEN_TIMEOUT_SEC - TOKEN_TIMEOUT_MARGIN_SEC
 
 
 class Error(Exception):
-  """Base class for errors from this module."""
-  pass
+    """Base class for errors from this module."""
+
+    pass
 
 
 # Caught separately in servlet.py
 class TokenIncorrect(Error):
-  """The POST body has an incorrect URL Command Attack token."""
-  pass
+    """The POST body has an incorrect URL Command Attack token."""
+
+    pass

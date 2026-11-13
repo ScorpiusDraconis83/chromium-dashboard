@@ -13,16 +13,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Fetches and caches Chrome release channel versions and milestone schedules from external APIs."""
+
 import json
 import logging
+from enum import StrEnum
+from typing import TypedDict
+
+import flask
 import requests
 
-from framework import rediscache
 # Note: this file cannot import core_models because it would be circular.
+import settings
+from framework import rediscache
 
 OMAHA_URL_TEMPLATE = (
     'https://versionhistory.googleapis.com'
-    '/v1/chrome/platforms/win/channels/%s/versions/?pageSize=1')
+    '/v1/chrome/platforms/win/channels/%s/versions/?pageSize=1'
+)
+
+
+class Channel(StrEnum):
+    """Chrome release channel names."""
+
+    STABLE = 'stable'
+    BETA = 'beta'
+    DEV = 'dev'
+    CANARY = 'canary'
+
+
+class ChannelVersionMapping(TypedDict):
+    """Typed dictionary representing a channel version entry in Omaha data."""
+
+    channel: Channel
+    version: str
+
 
 # Expected response for the "stable" channel looks like:
 # {
@@ -37,31 +62,134 @@ OMAHA_URL_TEMPLATE = (
 # We really only need the version string.
 
 
-def get_channel_version(channel):
-  """Return the version string that is live on the given channel."""
-  url = OMAHA_URL_TEMPLATE % channel
-  logging.info('fetching %s' % url)
-  result = requests.get(url)
-  if result.status_code != 200:
-    logging.info('Could not fetch channel info for %s', channel)
-    return '0.0'
-  channel_info = json.loads(result.content)
-  logging.info('channel_info is %r', channel_info)
-  version = channel_info['versions'][0]['version']
-  return version
+def get_channel_version(channel: Channel) -> str:
+    """Return the version string that is live on the given channel."""
+    if settings.UNIT_TEST_MODE or settings.PLAYWRIGHT_MODE:
+        if channel == Channel.STABLE:
+            return '147.0.7727.56'
+        if channel == Channel.BETA:
+            return '148.0.7778.5'
+        if channel == Channel.DEV:
+            return '149.0.7779.3'
+
+    url = OMAHA_URL_TEMPLATE % channel
+    logging.info('fetching %s' % url)
+    result = requests.get(url, timeout=60)
+    if result.status_code != 200:
+        logging.info('Could not fetch channel info for %s', channel)
+        return '0.0'
+    channel_info = json.loads(result.content)
+    logging.info('channel_info is %r', channel_info)
+    version = channel_info['versions'][0]['version']
+    return version
 
 
-def get_omaha_data():
-  omaha_data = rediscache.get('omaha_data')
+def get_omaha_data() -> list[dict[str, list[ChannelVersionMapping]]]:
+    """Fetch and return the Omaha data, caching it in Redis.
 
-  if omaha_data is None:
-    win_versions = [
-        {'channel': 'stable', 'version': get_channel_version('stable')},
-        {'channel': 'beta', 'version': get_channel_version('beta')},
-        {'channel': 'dev', 'version': get_channel_version('dev')},
+    Returns:
+        A list of dictionaries containing channel and version information.
+    """
+    omaha_data = rediscache.get('omaha_data')
+
+    if omaha_data is None:
+        win_versions: list[ChannelVersionMapping] = [
+            {
+                'channel': Channel.STABLE,
+                'version': get_channel_version(Channel.STABLE),
+            },
+            {
+                'channel': Channel.BETA,
+                'version': get_channel_version(Channel.BETA),
+            },
+            {
+                'channel': Channel.DEV,
+                'version': get_channel_version(Channel.DEV),
+            },
         ]
-    omaha_info = [{'versions': win_versions}]
-    omaha_data = json.dumps(omaha_info)
-    rediscache.set('omaha_data', omaha_data, time=86400) # cache for 24hrs.
+        omaha_info = [{'versions': win_versions}]
+        omaha_data = json.dumps(omaha_info)
+        rediscache.set('omaha_data', omaha_data, time=86400)  # cache for 24hrs.
 
-  return json.loads(omaha_data)
+    return json.loads(omaha_data)
+
+
+def get_current_channel_milestone(
+    channel: Channel = Channel.STABLE,
+) -> int:
+    """Return the milestone number that is current on the given channel."""
+    cache_attr = f'current_{channel}_milestone'
+    if flask.has_app_context() and hasattr(flask.g, cache_attr):
+        return getattr(flask.g, cache_attr)
+
+    omaha_data = get_omaha_data()
+    version_str = next(
+        (
+            v['version']
+            for v in omaha_data[0]['versions']
+            if v['channel'] == channel
+        ),
+        '0.0',
+    )
+    milestone = int(version_str.split('.')[0])
+
+    if flask.has_app_context():
+        setattr(flask.g, cache_attr, milestone)
+
+    return milestone
+
+
+def get_current_stable_milestone() -> int:
+    """Return the milestone number that is current on the stable channel."""
+    return get_current_channel_milestone(Channel.STABLE)
+
+
+def get_current_beta_milestone() -> int:
+    """Return the milestone number that is current on the beta channel."""
+    return get_current_channel_milestone(Channel.BETA)
+
+
+SCHEDULE_CACHE_TIME = 60 * 60  # 1 hour
+
+
+def fetch_chrome_release_info(version):
+    """Fetches release information for a specific Chrome version from Omaha."""
+    key = 'chromerelease|%s' % version
+
+    data = rediscache.get(key)
+    if data is None:
+        url = (
+            'https://chromiumdash.appspot.com/fetch_milestone_schedule?'
+            'mstone=%s' % version
+        )
+        result = requests.get(url, timeout=60)
+        if result.status_code == 200:
+            try:
+                logging.info(
+                    'result.content is:\n%s',
+                    result.content[: settings.MAX_LOG_LINE],
+                )
+                result_json = json.loads(result.content)
+                if 'mstones' in result_json:
+                    data = result_json['mstones'][0]
+                    if 'owners' in data:
+                        del data['owners']
+                    if 'feature_freeze' in data:
+                        del data['feature_freeze']
+                    if 'ldaps' in data:
+                        del data['ldaps']
+                    rediscache.set(key, data, time=SCHEDULE_CACHE_TIME)
+            except ValueError:
+                pass  # Handled by next statement
+
+        if not data:
+            data = {
+                'stable_date': None,
+                'earliest_beta': None,
+                'latest_beta': None,
+                'mstone': version,
+                'version': version,
+            }
+            # Note: we don't put placeholder data into redis.
+
+    return data
